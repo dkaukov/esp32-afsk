@@ -1,0 +1,20 @@
+{
+  "name": "esp32-afsk",
+  "version": "0.1.0",
+  "description": "ESP32 AFSK modem helper library",
+  "keywords": "esp32, afsk, audio, modem",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "authors": [
+    {
+      "name": "",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "headers": "ESP32Afsk.h"
+}
