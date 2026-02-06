@@ -16,6 +16,6 @@ Native decoder tests:
 - `pio test -e native`
 
 ESP32 embedded benchmark test (requires board connected):
-- `pio test -e esp32dev -f test_decoder_esp32 -v`
+- `pio test -e esp32dev -v`
 
 If you only want to build (no upload), add `--without-uploading`.
