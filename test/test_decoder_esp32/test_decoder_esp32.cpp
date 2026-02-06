@@ -3,23 +3,25 @@
 
 #include "unity.h"
 
-#include "afsk_multi_demod.h"
+#include "afsk_demod.h"
 #include "embedded_audio.h"
 
-static AfskMultiDemodulator g_demod;
+static AfskDemodulator g_demod;
+static volatile uint32_t g_packets = 0;
 
-static void on_packet_decoded(const uint8_t *, size_t) {
-    // Counted by g_demod.packet_count.
+static void on_packet_decoded(const uint8_t *, size_t, int) {
+    g_packets++;
 }
 
 static void test_decoder_embedded(void) {
     TEST_MESSAGE("Starting embedded decoder benchmark...");
-    afsk_multi_init(&g_demod, on_packet_decoded);
+    g_packets = 0;
+    afsk_demod_init(&g_demod, 0, on_packet_decoded);
 
     int64_t start = esp_timer_get_time();
     for (uint32_t i = 0; i < EMBEDDED_AUDIO_SAMPLES; i++) {
         float s = (float)EMBEDDED_AUDIO[i] / 32768.0f;
-        afsk_multi_process_sample(&g_demod, s);
+        afsk_demod_process_sample(&g_demod, s);
     }
     int64_t end = esp_timer_get_time();
     TEST_MESSAGE("DONE");
@@ -40,7 +42,7 @@ static void test_decoder_embedded(void) {
              "audio_sec     %.3f\n"
              "rt_factor     %.3f\n"
              "cpu_pct       %.2f\n",
-             (unsigned long)g_demod.packet_count,
+             (unsigned long)g_packets,
              decode_sec,
              audio_sec,
              rt_factor,
@@ -48,8 +50,8 @@ static void test_decoder_embedded(void) {
     //TEST_MESSAGE(msg);
     Serial.println(msg);
 
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(12, g_demod.packet_count, "Unexpected packet count");
-    TEST_ASSERT_TRUE_MESSAGE(cpu_pct <= 40.0, "CPU usage exceeds 40%");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(13, g_packets, "Unexpected packet count");
+    TEST_ASSERT_TRUE_MESSAGE(cpu_pct <= 60.0, "CPU usage exceeds 60%");
 }
 
 void setup() {

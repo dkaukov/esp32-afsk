@@ -36,7 +36,7 @@
 #include <Arduino.h>
 #include "test/stubs/test_globals.h"
 #include "afsk_encoder.h"
-#include "afsk_multi_demod.h"
+#include "afsk_demod.h"
 
 // ============================================================================
 // Constants
@@ -51,7 +51,7 @@
 // Global State
 // ============================================================================
 
-static AfskMultiDemodulator multiDemod;
+static AfskDemodulator demod;
 static uint32_t totalPacketsDecoded = 0;
 static uint32_t sessionPacketCount = 0;
 
@@ -69,10 +69,10 @@ static volatile int pktQueueHead = 0;
 static volatile int pktQueueTail = 0;
 
 // ============================================================================
-// Packet Callback (called by multi-demodulator)
+// Packet Callback (called by demodulator)
 // ============================================================================
 
-static void onPacketDecoded(const uint8_t *frame, size_t len) {
+static void onPacketDecoded(const uint8_t *frame, size_t len, int) {
     int next = (pktQueueHead + 1) % MAX_PKT_QUEUE;
     if (next != pktQueueTail) {
         memcpy(pktQueue[pktQueueHead].data, frame, len);
@@ -146,7 +146,7 @@ static void cmdDecode(const char *arg) {
     }
 
     // Reset decoder state
-    afsk_multi_init(&multiDemod, onPacketDecoded);
+    afsk_demod_init(&demod, 0, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
@@ -182,7 +182,7 @@ static void cmdDecode(const char *arg) {
         int16_t *samples = (int16_t *)chunkBuf;
         for (int i = 0; i < samplesToRead; i++) {
             float sample = (float)samples[i] / 32768.0f;
-            afsk_multi_process_sample(&multiDemod, sample);
+            afsk_demod_process_sample(&demod, sample);
         }
 
         samplesRemaining -= samplesToRead;
@@ -338,14 +338,14 @@ static void cmdLoopback() {
     }
 
     // Feed encoded audio into decoder
-    afsk_multi_init(&multiDemod, onPacketDecoded);
+    afsk_demod_init(&demod, 0, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
 
     for (size_t i = 0; i < numSamples; i++) {
         float sample = (float)audioBuf[i] / 32768.0f;
-        afsk_multi_process_sample(&multiDemod, sample);
+        afsk_demod_process_sample(&demod, sample);
     }
 
     free(audioBuf);
@@ -373,8 +373,7 @@ static void cmdStatus() {
     Serial.printf("PSRAM size: %d bytes\n", ESP.getPsramSize());
     Serial.printf("PSRAM free: %d bytes\n", ESP.getFreePsram());
     Serial.printf("Total packets decoded: %d\n", totalPacketsDecoded);
-    Serial.printf("Unique packets forwarded: %d\n", multiDemod.packet_count);
-    Serial.printf("Dedup suppressed: %d\n", multiDemod.dup_count);
+    Serial.printf("Packets decoded: %d\n", (int)totalPacketsDecoded);
     Serial.printf("CPU freq: %d MHz\n", ESP.getCpuFreqMHz());
     Serial.println("---");
 }
@@ -471,8 +470,8 @@ void setup() {
     // Initialize sine table for encoder
     initEncoderSineTable();
 
-    // Initialize multi-demodulator
-    afsk_multi_init(&multiDemod, onPacketDecoded);
+    // Initialize demodulator
+    afsk_demod_init(&demod, 0, onPacketDecoded);
 }
 
 void loop() {

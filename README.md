@@ -25,6 +25,6 @@ ESP32 embedded benchmark test (requires board connected):
     - `audio_sec`: clip duration (seconds)
     - `rt_factor`: `audio_sec / decode_sec` (values > 1.0 mean faster than real time)
     - `cpu_pct`: `decode_sec / audio_sec * 100` (values < 100% mean real-time or better)
-  - The test currently asserts an expected packet count and an upper CPU usage bound.
+  - The test currently asserts `packets == 13` and `cpu_pct <= 60.0`.
 
 If you only want to build (no upload), add `--without-uploading`.

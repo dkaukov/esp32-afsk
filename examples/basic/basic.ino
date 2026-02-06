@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "afsk_multi_demod.h"
+#include "afsk_demod.h"
 
 void setup() {
   Serial.begin(115200);
@@ -8,12 +8,12 @@ void setup() {
 
 void loop() {
   // Placeholder: process silence through the decoder.
-  static AfskMultiDemodulator demod;
+  static AfskDemodulator demod;
   static bool initialized = false;
   if (!initialized) {
-    afsk_multi_init(&demod, nullptr);
+    afsk_demod_init(&demod, 0, nullptr);
     initialized = true;
   }
-  afsk_multi_process_sample(&demod, 0.0f);
+  afsk_demod_process_sample(&demod, 0.0f);
   delay(1);
 }

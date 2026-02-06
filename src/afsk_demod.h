@@ -1,58 +1,50 @@
 /*
 AFSK 1200 Demodulator for ESP32
-Port of javAX25 Afsk1200Demodulator.java by Sivan Toledo (2012)
-Adapted for KV4P-HT ESP32 firmware.
+Port of https://github.com/dkaukov/afsk-java (Demodulator + SymbolSlicerPll + NRZI + HDLC).
 
-Original copyright:
-  Copyright (C) Sivan Toledo, 2012
-  Released under GNU General Public License v2 or later.
-
-This implementation targets the ESP32 WROOM-32 with single-precision FPU.
-It uses correlation-based mark/space detection, zero-crossing bit timing
-recovery, and AX.25 HDLC framing with CRC-CCITT validation.
+Pipeline:
+  - Band-pass filter
+  - Mix to baseband (DDS oscillator at center frequency)
+  - Low-pass I/Q filters
+  - FM demod via phase difference (deltaQ)
+  - Symbol slicer PLL
+  - NRZI decode
+  - HDLC deframe + CRC verify
 */
 
 #pragma once
 
 #include <math.h>
-#include <string.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
-// ============================================================================
-// Section 1: Constants
-// ============================================================================
+#ifndef PROGMEM
+#define PROGMEM
+#endif
 
-// Audio parameters (must match rxAudio.h I2S config)
-#define AFSK_SAMPLE_RATE       48000
-#define AFSK_ACTUAL_SAMPLE_RATE (AFSK_SAMPLE_RATE * 1.02f)  // 48960 Hz (2% oversample)
-#define AFSK_BAUD_RATE         1200
-#define AFSK_MARK_FREQ         1200.0f
-#define AFSK_SPACE_FREQ        2200.0f
+#ifndef AFSK_SAMPLE_RATE
+#define AFSK_SAMPLE_RATE 48000
+#endif
 
-// Derived constants
-#define AFSK_SAMPLES_PER_BIT   (AFSK_ACTUAL_SAMPLE_RATE / (float)AFSK_BAUD_RATE)  // ~40.8
-#define AFSK_CORR_LEN          ((int)AFSK_SAMPLES_PER_BIT)  // 40 (correlation window)
+#define AFSK_BAUD_RATE   1200.0f
+#define AFSK_MARK_FREQ   1200.0f
+#define AFSK_SPACE_FREQ  2200.0f
 
-// Phase increments for correlator
-#define AFSK_PHASE_INC_F0      (2.0f * (float)M_PI * AFSK_MARK_FREQ  / AFSK_ACTUAL_SAMPLE_RATE)
-#define AFSK_PHASE_INC_F1      (2.0f * (float)M_PI * AFSK_SPACE_FREQ / AFSK_ACTUAL_SAMPLE_RATE)
+#define AFSK_MAX_FRAME_SIZE 360
+#define AFSK_MIN_FRAME_SIZE 9
 
-// AX.25 frame limits
-#define AFSK_MAX_FRAME_SIZE    330  // 7+7+(8*7)+1+1+256+2
-#define AFSK_MIN_FRAME_SIZE    18   // dest(7)+src(7)+ctrl(1)+pid(1)+fcs(2)
+#define AX25_CRC_CORRECT   0xF0B8
+#define CRC_CCITT_INIT_VAL 0xFFFF
 
-// CRC constants
-#define AX25_CRC_CORRECT       0xF0B8
-#define CRC_CCITT_INIT_VAL     0xFFFF
+// Filter limits (static buffers sized for 48 kHz / 1200 baud)
+#define AFSK_MAX_BPF_TAPS 61
+#define AFSK_MAX_LPF_TAPS 41
 
-// FIR filter tap count (matching javAX25 filter_index=1, rate_index=7 for 48kHz)
-#define AFSK_FILTER_TAPS       80
+// Fixed-point helpers removed (float DSP path is faster on ESP32).
 
-// ============================================================================
-// Section 2: CRC-CCITT Lookup Table (flash)
-// ============================================================================
-
+// CRC-CCITT lookup table (same as ax25-java)
 static const uint16_t crc_ccitt_tab[256] PROGMEM = {
     0x0000, 0x1189, 0x2312, 0x329b, 0x4624, 0x57ad, 0x6536, 0x74bf,
     0x8c48, 0x9dc1, 0xaf5a, 0xbed3, 0xca6c, 0xdbe5, 0xe97e, 0xf8f7,
@@ -85,406 +77,519 @@ static const uint16_t crc_ccitt_tab[256] PROGMEM = {
     0xe70e, 0xf687, 0xc41c, 0xd595, 0xa12a, 0xb0a3, 0x8238, 0x93b1,
     0x6b46, 0x7acf, 0x4854, 0x59dd, 0x2d62, 0x3ceb, 0x0e70, 0x1ff9,
     0xf78f, 0xe606, 0xd49d, 0xc514, 0xb1ab, 0xa022, 0x92b9, 0x8330,
-    0x7bc7, 0x6a4e, 0x58d5, 0x495c, 0x3de3, 0x2c6a, 0x1ef1, 0x0f78,
+    0x7bc7, 0x6a4e, 0x58d5, 0x495c, 0x3de3, 0x2c6a, 0x1ef1, 0x0f78
 };
 
 // ============================================================================
-// Section 3: FIR Filter Coefficients (flash)
-// Source: Afsk1200Filters.java, indices [1][7] (filter_index=1, rate_index=7)
+// FIR designer (ported from afsk-java)
 // ============================================================================
 
-// Time-domain filter for flat/no-emphasis demodulator (d0)
-// From: time_domain_filter_none[1][7]
-static const float td_filter_none[AFSK_FILTER_TAPS] PROGMEM = {
-    1.090725e-003f,  2.145359e-004f, -3.671281e-004f, -5.168203e-004f, -1.324122e-004f,
-    8.390482e-004f,  2.391043e-003f,  4.452077e-003f,  6.885825e-003f,  9.497335e-003f,
-    1.204518e-002f,  1.425887e-002f,  1.586042e-002f,  1.658843e-002f,  1.622265e-002f,
-    1.460720e-002f,  1.167002e-002f,  7.436988e-003f,  2.038835e-003f, -4.289859e-003f,
-   -1.122021e-002f, -1.834677e-002f, -2.521240e-002f, -3.133890e-002f, -3.626095e-002f,
-   -3.956110e-002f, -4.090303e-002f, -4.006032e-002f, -3.693852e-002f, -3.158836e-002f,
-   -2.420895e-002f, -1.514021e-002f, -4.844976e-003f,  6.118407e-003f,  1.713096e-002f,
-    2.755318e-002f,  3.676743e-002f,  4.421957e-002f,  4.945669e-002f,  5.215826e-002f,
-    5.215826e-002f,  4.945669e-002f,  4.421957e-002f,  3.676743e-002f,  2.755318e-002f,
-    1.713096e-002f,  6.118407e-003f, -4.844976e-003f, -1.514021e-002f, -2.420895e-002f,
-   -3.158836e-002f, -3.693852e-002f, -4.006032e-002f, -4.090303e-002f, -3.956110e-002f,
-   -3.626095e-002f, -3.133890e-002f, -2.521240e-002f, -1.834677e-002f, -1.122021e-002f,
-   -4.289859e-003f,  2.038835e-003f,  7.436988e-003f,  1.167002e-002f,  1.460720e-002f,
-    1.622265e-002f,  1.658843e-002f,  1.586042e-002f,  1.425887e-002f,  1.204518e-002f,
-    9.497335e-003f,  6.885825e-003f,  4.452077e-003f,  2.391043e-003f,  8.390482e-004f,
-   -1.324122e-004f, -5.168203e-004f, -3.671281e-004f,  2.145359e-004f,  1.090725e-003f
-};
+static inline float afsk_bessel_i0(float x) {
+    double sum = 1.0;
+    double y = (x * x) / 4.0;
+    double term = y;
+    for (int k = 1; k < 30; k++) {
+        sum += term;
+        term *= y / (k * k);
+    }
+    return (float)sum;
+}
 
-// Time-domain filter for 6dB de-emphasis demodulator (d6)
-// From: time_domain_filter_full[1][7]
-static const float td_filter_full[AFSK_FILTER_TAPS] PROGMEM = {
-   -1.555936e-003f, -3.074922e-003f, -4.298532e-003f, -5.055988e-003f, -5.207867e-003f,
-   -4.661980e-003f, -3.386024e-003f, -1.415645e-003f,  1.143128e-003f,  4.117646e-003f,
-    7.278662e-003f,  1.035612e-002f,  1.305964e-002f,  1.510224e-002f,  1.622537e-002f,
-    1.622320e-002f,  1.496402e-002f,  1.240675e-002f,  8.611013e-003f,  3.739340e-003f,
-   -1.948784e-003f, -8.111153e-003f, -1.434449e-002f, -2.021209e-002f, -2.527549e-002f,
-   -2.912772e-002f, -3.142564e-002f, -3.191868e-002f, -3.047148e-002f, -2.707872e-002f,
-   -2.187043e-002f, -1.510729e-002f, -7.165972e-003f,  1.484604e-003f,  1.031443e-002f,
-    1.876872e-002f,  2.630674e-002f,  3.244019e-002f,  3.676812e-002f,  3.900592e-002f,
-    3.900592e-002f,  3.676812e-002f,  3.244019e-002f,  2.630674e-002f,  1.876872e-002f,
-    1.031443e-002f,  1.484604e-003f, -7.165972e-003f, -1.510729e-002f, -2.187043e-002f,
-   -2.707872e-002f, -3.047148e-002f, -3.191868e-002f, -3.142564e-002f, -2.912772e-002f,
-   -2.527549e-002f, -2.021209e-002f, -1.434449e-002f, -8.111153e-003f, -1.948784e-003f,
-    3.739340e-003f,  8.611013e-003f,  1.240675e-002f,  1.496402e-002f,  1.622320e-002f,
-    1.622537e-002f,  1.510224e-002f,  1.305964e-002f,  1.035612e-002f,  7.278662e-003f,
-    4.117646e-003f,  1.143128e-003f, -1.415645e-003f, -3.386024e-003f, -4.661980e-003f,
-   -5.207867e-003f, -5.055988e-003f, -4.298532e-003f, -3.074922e-003f, -1.555936e-003f
-};
+static inline float afsk_kaiser_beta(float attenuation_db) {
+    if (attenuation_db > 50.0f) {
+        return 0.1102f * (attenuation_db - 8.7f);
+    } else if (attenuation_db >= 21.0f) {
+        return 0.5842f * powf(attenuation_db - 21.0f, 0.4f) + 0.07886f * (attenuation_db - 21.0f);
+    }
+    return 0.0f;
+}
 
-// Correlation difference filter (used by both demodulators)
-// From: corr_diff_filter[1][7]
-static const float cd_filter_coeff[AFSK_FILTER_TAPS] PROGMEM = {
-   -5.038663e-005f, -1.566090e-004f, -2.776591e-004f, -4.222836e-004f, -5.979724e-004f,
-   -8.099774e-004f, -1.060382e-003f, -1.347281e-003f, -1.664124e-003f, -1.999269e-003f,
-   -2.335792e-003f, -2.651573e-003f, -2.919681e-003f, -3.109052e-003f, -3.185454e-003f,
-   -3.112703e-003f, -2.854091e-003f, -2.373975e-003f, -1.639451e-003f, -6.220534e-004f,
-    7.006086e-004f,  2.343343e-003f,  4.312078e-003f,  6.602848e-003f,  9.201100e-003f,
-    1.208140e-002f,  1.520752e-002f,  1.853299e-002f,  2.200202e-002f,  2.555088e-002f,
-    2.910955e-002f,  3.260375e-002f,  3.595715e-002f,  3.909375e-002f,  4.194031e-002f,
-    4.442872e-002f,  4.649828e-002f,  4.809774e-002f,  4.918705e-002f,  4.973870e-002f,
-    4.973870e-002f,  4.918705e-002f,  4.809774e-002f,  4.649828e-002f,  4.442872e-002f,
-    4.194031e-002f,  3.909375e-002f,  3.595715e-002f,  3.260375e-002f,  2.910955e-002f,
-    2.555088e-002f,  2.200202e-002f,  1.853299e-002f,  1.520752e-002f,  1.208140e-002f,
-    9.201100e-003f,  6.602848e-003f,  4.312078e-003f,  2.343343e-003f,  7.006086e-004f,
-   -6.220534e-004f, -1.639451e-003f, -2.373975e-003f, -2.854091e-003f, -3.112703e-003f,
-   -3.185454e-003f, -3.109052e-003f, -2.919681e-003f, -2.651573e-003f, -2.335792e-003f,
-   -1.999269e-003f, -1.664124e-003f, -1.347281e-003f, -1.060382e-003f, -8.099774e-004f,
-   -5.979724e-004f, -4.222836e-004f, -2.776591e-004f, -1.566090e-004f, -5.038663e-005f
-};
+static inline void afsk_normalize_unity_gain(float *taps, int len) {
+    float sum = 0.0f;
+    for (int i = 0; i < len; i++) sum += taps[i];
+    if (sum == 0.0f) return;
+    float inv = 1.0f / sum;
+    for (int i = 0; i < len; i++) taps[i] *= inv;
+}
+
+static void afsk_design_lowpass_hamming(float *out, int num_taps, float cutoff_hz, float sample_rate) {
+    if ((num_taps & 1) == 0) num_taps++;
+    float fc = cutoff_hz / sample_rate;
+    int mid = num_taps / 2;
+    for (int i = 0; i < num_taps; i++) {
+        int n = i - mid;
+        float sinc = (n == 0) ? 2.0f * fc : sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
+        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * i / (num_taps - 1));
+        out[i] = sinc * w;
+    }
+    afsk_normalize_unity_gain(out, num_taps);
+}
+
+static void afsk_design_bandpass_kaiser(float *out, int num_taps, float low_hz, float high_hz, float sample_rate, float attenuation_db) {
+    if ((num_taps & 1) == 0) num_taps++;
+    float fl = low_hz / sample_rate;
+    float fh = high_hz / sample_rate;
+    int mid = num_taps / 2;
+    float beta = afsk_kaiser_beta(attenuation_db);
+    float denom = afsk_bessel_i0(beta);
+    for (int i = 0; i < num_taps; i++) {
+        int n = i - mid;
+        float sinc_h = (n == 0) ? 2.0f * fh : sinf(2.0f * (float)M_PI * fh * n) / ((float)M_PI * n);
+        float sinc_l = (n == 0) ? 2.0f * fl : sinf(2.0f * (float)M_PI * fl * n) / ((float)M_PI * n);
+        float r = (2.0f * i) / (num_taps - 1) - 1.0f;
+        float w = afsk_bessel_i0(beta * sqrtf(1.0f - r * r)) / denom;
+        out[i] = (sinc_h - sinc_l) * w;
+    }
+    // Band-pass is normalized downstream to avoid excessive tap magnitudes.
+}
 
 // ============================================================================
-// Section 4: Demodulator State
+// FIR (direct-form, circular buffer) - float
 // ============================================================================
-
-// Callback type for decoded packets
-typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len, int emphasis);
-
-typedef enum {
-    DEMOD_WAITING,
-    DEMOD_JUST_SEEN_FLAG,
-    DEMOD_DECODING
-} AfskDemodState;
 
 typedef struct {
-    // Configuration
-    int emphasis;                        // 0 = flat, 6 = de-emphasis
-    float samples_per_bit;               // ~40.8
-    const float *td_filter;              // pointer to time-domain filter coefficients
-    const float *cd_filter;              // pointer to corr-diff filter coefficients
+    float *taps;
+    float *state;
+    int len;
+    int idx;
+} AfskFastFIR;
 
-    // Phase tracking for correlator
-    float phase_f0;                      // 1200 Hz correlator phase
-    float phase_f1;                      // 2200 Hz correlator phase
+static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len) {
+    f->len = len;
+    f->idx = 0;
+    f->taps = taps_store;
+    f->state = state_store;
+    for (int i = 0; i < len; i++) f->taps[i] = taps[i];
+    if (state_len > 0) {
+        memset(f->state, 0, sizeof(float) * (size_t)state_len);
+    }
+}
 
-    // Circular buffers for time-domain filtering
-    float u1[AFSK_FILTER_TAPS];          // raw input samples
-    float x[AFSK_FILTER_TAPS];           // filtered input samples
+static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
+    f->state[f->idx] = x;
+    float acc = 0.0f;
+    int s = f->idx;
+    for (int i = 0; i < f->len; i++) {
+        acc += f->taps[i] * f->state[s];
+        s = (s == 0) ? (f->len - 1) : (s - 1);
+    }
+    f->idx++;
+    if (f->idx >= f->len) f->idx = 0;
+    return acc;
+}
 
-    // Circular buffers for frequency correlation (sized to one symbol period)
-    float c0_real[AFSK_CORR_LEN];        // 1200 Hz correlator real part
-    float c0_imag[AFSK_CORR_LEN];        // 1200 Hz correlator imaginary part
-    float c1_real[AFSK_CORR_LEN];        // 2200 Hz correlator real part
-    float c1_imag[AFSK_CORR_LEN];        // 2200 Hz correlator imaginary part
+// ============================================================================
+// IIR LPF (single pole) - float
+// ============================================================================
 
-    // Circular buffer for correlation difference
-    float diff[AFSK_FILTER_TAPS];        // c0-c1 difference signal
+typedef struct {
+    float alpha;
+    float y;
+} AfskIIR1;
 
-    // Circular buffer indices
-    int j_td;                            // time-domain filter index
-    int j_cd;                            // correlation-difference filter index
-    int j_corr;                          // correlator index
+static inline void afsk_iir_init(AfskIIR1 *f, float sample_rate, float cutoff_hz) {
+    f->alpha = 1.0f - expf(-2.0f * (float)M_PI * cutoff_hz / sample_rate);
+    f->y = 0.0f;
+}
 
-    // Running sample counter
-    int t;
+static inline float afsk_iir_filter(AfskIIR1 *f, float x) {
+    f->y += f->alpha * (x - f->y);
+    return f->y;
+}
 
-    // Zero-crossing detection
-    float previous_fdiff;
-    int last_transition;
+// ============================================================================
+// DDS Oscillator (table-based) - float
+// ============================================================================
 
-    // Bit assembly
-    AfskDemodState state;
-    int data;                            // current byte being assembled
-    int bitcount;                        // bits accumulated in current byte
-    int flag_count;
-    bool flag_separator_seen;
+typedef struct {
+    uint32_t phase;
+    uint32_t phase_step;
+    int index;
+} AfskDdsOsc;
 
-    // Packet assembly
-    uint8_t packet_buf[AFSK_MAX_FRAME_SIZE];
-    int packet_size;
-    uint16_t packet_crc;
-    bool packet_active;                  // true when packet_buf is in use
+#define AFSK_DDS_TABLE_BITS 9
+#define AFSK_DDS_TABLE_SIZE (1 << AFSK_DDS_TABLE_BITS)
+#define AFSK_DDS_TABLE_MASK (AFSK_DDS_TABLE_SIZE - 1)
+#define AFSK_DDS_COS_SHIFT (AFSK_DDS_TABLE_SIZE / 4)
 
-    // Data carrier detect
-    volatile bool data_carrier;
+static float afsk_dds_table[AFSK_DDS_TABLE_SIZE];
+static bool afsk_dds_table_init = false;
 
-    // Callback
+static void afsk_dds_init(AfskDdsOsc *osc, float sample_rate, float freq) {
+    if (!afsk_dds_table_init) {
+        for (int i = 0; i < AFSK_DDS_TABLE_SIZE; i++) {
+            afsk_dds_table[i] = sinf(2.0f * (float)M_PI * i / (float)AFSK_DDS_TABLE_SIZE);
+        }
+        afsk_dds_table_init = true;
+    }
+    osc->phase = 0;
+    osc->index = 0;
+    osc->phase_step = (uint32_t)((freq * (1ull << 32)) / sample_rate);
+}
+
+static inline void afsk_dds_next(AfskDdsOsc *osc) {
+    osc->phase += osc->phase_step;
+    osc->index = (int)((osc->phase >> (32 - AFSK_DDS_TABLE_BITS)) & AFSK_DDS_TABLE_MASK);
+}
+
+static inline float afsk_dds_sin(const AfskDdsOsc *osc) {
+    return afsk_dds_table[osc->index];
+}
+
+static inline float afsk_dds_cos(const AfskDdsOsc *osc) {
+    return afsk_dds_table[(osc->index + AFSK_DDS_COS_SHIFT) & AFSK_DDS_TABLE_MASK];
+}
+
+// ============================================================================
+// Symbol slicer PLL (ported from afsk-java)
+// ============================================================================
+
+typedef struct {
+    float nominal_step;
+    float step_min;
+    float step_max;
+    float kp;
+    float ki;
+    float phase_gain_acq;
+    float lock_error_window;
+    float unlock_error_window;
+    int lock_consecutive;
+    int unlock_bad_limit;
+    float step;
+    float phase;
+    float integ;
+    float integ_clamp;
+    int prev_symbol;
+    bool locked;
+    int good_trans;
+    int bad_trans;
+} AfskSlicerPll;
+
+#ifdef AFSK_DEMOD_STATS
+typedef struct {
+    float demod_min;
+    float demod_max;
+    float demod_sum;
+    uint64_t samples;
+} AfskDemodStats;
+#endif
+
+static inline float afsk_clamp(float v, float lo, float hi) {
+    return (v < lo) ? lo : (v > hi ? hi : v);
+}
+
+static void afsk_slicer_init(AfskSlicerPll *pll, float sample_rate, float baud_rate) {
+    float nominal = baud_rate / sample_rate;
+    float ppm = 5100.0f * 1e-6f;
+    pll->nominal_step = nominal;
+    pll->step_min = nominal * (1.0f - ppm);
+    pll->step_max = nominal * (1.0f + ppm);
+    pll->kp = 1.0e-4f;
+    pll->ki = 8.0e-6f;
+    pll->phase_gain_acq = 0.218f;
+    pll->lock_error_window = 0.30f;
+    pll->unlock_error_window = fminf(0.49f, pll->lock_error_window * 1.5f);
+    pll->lock_consecutive = 6;
+    pll->unlock_bad_limit = 3;
+    pll->step = nominal;
+    pll->phase = 0.5f;
+    pll->integ = 0.0f;
+    pll->integ_clamp = 1000.0f;
+    pll->prev_symbol = 0;
+    pll->locked = false;
+    pll->good_trans = 0;
+    pll->bad_trans = 0;
+}
+
+// ============================================================================
+// NRZI + HDLC deframer + CRC verify
+// ============================================================================
+
+typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len, int emphasis);
+
+typedef struct {
+    uint8_t flag_window;
+    bool in_frame;
+    int one_run;
+    int bit_pos;
+    int current_byte;
+    uint8_t frame[AFSK_MAX_FRAME_SIZE];
+    int frame_size;
+} AfskHdlcDeframer;
+
+static inline void afsk_hdlc_reset(AfskHdlcDeframer *d) {
+    d->flag_window = 0;
+    d->in_frame = false;
+    d->one_run = 0;
+    d->bit_pos = 0;
+    d->current_byte = 0;
+    d->frame_size = 0;
+}
+
+static inline void afsk_hdlc_start(AfskHdlcDeframer *d) {
+    d->in_frame = true;
+    d->one_run = 0;
+    d->bit_pos = 0;
+    d->current_byte = 0;
+    d->frame_size = 0;
+}
+
+static inline void afsk_hdlc_drop(AfskHdlcDeframer *d) {
+    d->in_frame = false;
+    d->one_run = 0;
+    d->bit_pos = 0;
+    d->current_byte = 0;
+    d->frame_size = 0;
+}
+
+static inline void afsk_hdlc_add_bit(AfskHdlcDeframer *d, int bit) {
+    d->current_byte |= (bit << d->bit_pos);
+    d->bit_pos++;
+    if (d->bit_pos == 8) {
+        if (d->frame_size < AFSK_MAX_FRAME_SIZE) {
+            d->frame[d->frame_size++] = (uint8_t)d->current_byte;
+        }
+        d->current_byte = 0;
+        d->bit_pos = 0;
+    }
+}
+
+static inline uint16_t afsk_crc_calc(const uint8_t *data, size_t len) {
+    uint16_t crc = CRC_CCITT_INIT_VAL;
+    for (size_t i = 0; i < len; i++) {
+        crc = (crc >> 8) ^ crc_ccitt_tab[(crc ^ data[i]) & 0xFF];
+    }
+    return crc;
+}
+
+static int afsk_validate_ax25_addresses(const uint8_t *buf, int end) {
+    int i = 0;
+    int blocks = 0;
+    while (true) {
+        if (i + 7 > end) return -1;
+        for (int k = 0; k < 6; k++) {
+            int b = buf[i + k] & 0xFF;
+            if ((b & 0x01) != 0) return -1;
+            int ch = (b >> 1) & 0x7F;
+            bool ok = (ch == 0x20) || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
+            if (!ok) return -1;
+        }
+        int ssid = buf[i + 6] & 0xFF;
+        bool last = (ssid & 0x01) != 0;
+        blocks++;
+        i += 7;
+        if (blocks == 1 && last) return -1;
+        if (last) break;
+        if (blocks >= 10) return -1;
+    }
+    if (blocks < 2) return -1;
+    return i;
+}
+
+static bool afsk_passes_ax25_sanity(const uint8_t *frame, size_t len, bool require_aprs_ui) {
+    if (len < 2) return false;
+    int end = (int)len - 2;
+    int i = afsk_validate_ax25_addresses(frame, end);
+    if (i < 0) return false;
+    if (require_aprs_ui) {
+        if (i + 2 > end) return false;
+        int control = frame[i] & 0xFF;
+        int pid = frame[i + 1] & 0xFF;
+        return control == 0x03 && pid == 0xF0;
+    }
+    return true;
+}
+
+// ============================================================================
+// Demodulator state
+// ============================================================================
+
+typedef struct {
+    int emphasis;
     AfskPacketCallback callback;
+
+    AfskDdsOsc osc;
+    AfskFastFIR bpf;
+    AfskFastFIR i_filt;
+    AfskFastFIR q_filt;
+    float bpf_taps[AFSK_MAX_BPF_TAPS];
+    float bpf_state[AFSK_MAX_BPF_TAPS];
+    float lpf_taps[AFSK_MAX_LPF_TAPS];
+    float i_state[AFSK_MAX_LPF_TAPS];
+    float q_state[AFSK_MAX_LPF_TAPS];
+    AfskIIR1 out_lp;
+    float norm_gain;
+    float prev_i;
+    float prev_q;
+
+    AfskSlicerPll slicer;
+    int nrzi_last;
+
+    AfskHdlcDeframer hdlc;
+
+    bool require_aprs_ui;
+
+#ifdef AFSK_DEMOD_STATS
+    AfskDemodStats stats;
+#endif
 } AfskDemodulator;
 
 // ============================================================================
-// Section 5: Helper Functions
-// ============================================================================
-
-// FIR filter: convolve circular buffer x[] at position j with filter f[]
-// Matches Filter.filter() from Filter.java
-static inline float afsk_fir_filter(const float *x, int j, const float *f, int f_len, int buf_len) {
-    float c = 0.0f;
-    for (int i = 0; i < f_len; i++) {
-        c += x[j] * f[i];
-        j--;
-        if (j < 0) j = buf_len - 1;
-    }
-    return c;
-}
-
-// Sum all elements in circular buffer x[] of length len, starting at position j
-// Matches sum() from Afsk1200Demodulator.java
-static inline float afsk_circular_sum(const float *x, int j, int len) {
-    float c = 0.0f;
-    for (int i = 0; i < len; i++) {
-        c += x[j];
-        j--;
-        if (j < 0) j = len - 1;
-    }
-    return c;
-}
-
-// CRC-CCITT update
-static inline void afsk_crc_update(uint16_t *crc, uint8_t b) {
-    *crc = (*crc >> 8) ^ crc_ccitt_tab[(*crc ^ b) & 0xFF];
-}
-
-// ============================================================================
-// Section 6: Demodulator Initialization
+// Init
 // ============================================================================
 
 static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback callback) {
     memset(d, 0, sizeof(AfskDemodulator));
-
     d->emphasis = emphasis;
-    d->samples_per_bit = AFSK_SAMPLES_PER_BIT;
     d->callback = callback;
+    d->require_aprs_ui = true;
 
-    // Select time-domain filter based on emphasis
-    if (emphasis == 0) {
-        d->td_filter = td_filter_none;
-    } else {
-        d->td_filter = td_filter_full;
-    }
-    d->cd_filter = cd_filter_coeff;
+    float sample_rate = (float)AFSK_SAMPLE_RATE;
+    float baud = AFSK_BAUD_RATE;
+    float center = (AFSK_MARK_FREQ + AFSK_SPACE_FREQ) * 0.5f;
+    float dev = 0.5f * (AFSK_SPACE_FREQ - AFSK_MARK_FREQ);
 
-    // State machine starts in WAITING
-    d->state = DEMOD_WAITING;
-    d->data_carrier = false;
+    afsk_dds_init(&d->osc, sample_rate, center);
 
-    // Initialize packet CRC
-    d->packet_crc = CRC_CCITT_INIT_VAL;
-    d->packet_active = false;
+    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f);
+    if ((bpf_len & 1) == 0) bpf_len++;
+    if (bpf_len > AFSK_MAX_BPF_TAPS) bpf_len = AFSK_MAX_BPF_TAPS | 1;
+    afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
+    afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
+
+    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f);
+    if ((lpf_len & 1) == 0) lpf_len++;
+    if (lpf_len > AFSK_MAX_LPF_TAPS) lpf_len = AFSK_MAX_LPF_TAPS | 1;
+    afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
+    afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
+    afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);
+
+    d->norm_gain = 1.0f / (2.0f * (float)M_PI * (dev / sample_rate));
+    afsk_iir_init(&d->out_lp, sample_rate, baud * 3.0f);
+    d->prev_i = 0.0f;
+    d->prev_q = 0.0f;
+
+    afsk_slicer_init(&d->slicer, sample_rate, baud);
+    d->nrzi_last = 0;
+    afsk_hdlc_reset(&d->hdlc);
+
+#ifdef AFSK_DEMOD_STATS
+    d->stats.demod_min = 1e9f;
+    d->stats.demod_max = -1e9f;
+    d->stats.demod_sum = 0.0f;
+    d->stats.samples = 0;
+#endif
 }
 
 // ============================================================================
-// Section 7: Packet Assembly Helpers
+// Per-sample processing
 // ============================================================================
 
-// Start a new packet
-static inline void afsk_packet_reset(AfskDemodulator *d) {
-    d->packet_size = 0;
-    d->packet_crc = CRC_CCITT_INIT_VAL;
-    d->packet_active = true;
+static inline int afsk_nrzi_decode(AfskDemodulator *d, int bit) {
+    int out = (bit == d->nrzi_last) ? 1 : 0;
+    d->nrzi_last = bit;
+    return out;
 }
 
-// Add a byte to the current packet, updating CRC
-// Returns false if packet buffer is full
-static inline bool afsk_packet_add_byte(AfskDemodulator *d, uint8_t b) {
-    if (d->packet_size >= AFSK_MAX_FRAME_SIZE) return false;
+static void afsk_hdlc_process_bit(AfskDemodulator *d, int bit) {
+    const uint8_t FLAG = 0x7E;
+    AfskHdlcDeframer *h = &d->hdlc;
 
-    afsk_crc_update(&d->packet_crc, b);
-    d->packet_buf[d->packet_size] = b;
-    d->packet_size++;
-    return true;
-}
-
-// Check if the packet is valid (minimum size + correct CRC)
-static inline bool afsk_packet_terminate(AfskDemodulator *d) {
-    if (d->packet_size < AFSK_MIN_FRAME_SIZE) return false;
-    return (d->packet_crc == AX25_CRC_CORRECT);
-}
-
-// ============================================================================
-// Section 8: Per-Sample Processing
-// ============================================================================
-
-// Process one audio sample through the demodulator.
-// This is the core inner loop — called once per sample (~48,960 times/second).
-// Ported from Afsk1200Demodulator.addSamplesPrivate() lines 248-466.
-static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
-
-    // --- Step 1: Time-domain filtering ---
-    d->u1[d->j_td] = sample;
-    d->x[d->j_td] = afsk_fir_filter(d->u1, d->j_td, d->td_filter,
-                                      AFSK_FILTER_TAPS, AFSK_FILTER_TAPS);
-
-    // --- Step 2: Correlator products ---
-    float cos_f0 = cosf(d->phase_f0);
-    float sin_f0 = sinf(d->phase_f0);
-    float cos_f1 = cosf(d->phase_f1);
-    float sin_f1 = sinf(d->phase_f1);
-
-    float filtered = d->x[d->j_td];
-    d->c0_real[d->j_corr] = filtered * cos_f0;
-    d->c0_imag[d->j_corr] = filtered * sin_f0;
-    d->c1_real[d->j_corr] = filtered * cos_f1;
-    d->c1_imag[d->j_corr] = filtered * sin_f1;
-
-    // Advance phase accumulators
-    d->phase_f0 += AFSK_PHASE_INC_F0;
-    if (d->phase_f0 > 2.0f * (float)M_PI) d->phase_f0 -= 2.0f * (float)M_PI;
-    d->phase_f1 += AFSK_PHASE_INC_F1;
-    if (d->phase_f1 > 2.0f * (float)M_PI) d->phase_f1 -= 2.0f * (float)M_PI;
-
-    // --- Step 3: Magnitude computation ---
-    float cr, ci;
-
-    cr = afsk_circular_sum(d->c0_real, d->j_corr, AFSK_CORR_LEN);
-    ci = afsk_circular_sum(d->c0_imag, d->j_corr, AFSK_CORR_LEN);
-    float c0 = sqrtf(cr * cr + ci * ci);
-
-    cr = afsk_circular_sum(d->c1_real, d->j_corr, AFSK_CORR_LEN);
-    ci = afsk_circular_sum(d->c1_imag, d->j_corr, AFSK_CORR_LEN);
-    float c1 = sqrtf(cr * cr + ci * ci);
-
-    // --- Step 4: Difference signal + filtering ---
-    d->diff[d->j_cd] = c0 - c1;
-    float fdiff = afsk_fir_filter(d->diff, d->j_cd, d->cd_filter,
-                                   AFSK_FILTER_TAPS, AFSK_FILTER_TAPS);
-
-    // --- Step 5: Zero-crossing detection ---
-    if (d->previous_fdiff * fdiff < 0 || d->previous_fdiff == 0) {
-
-        // Transition detected — measure bit period
-        int p = d->t - d->last_transition;
-        d->last_transition = d->t;
-
-        int bits = (int)roundf((float)p / d->samples_per_bit);
-
-        // --- Step 6: State machine ---
-        if (bits == 0 || bits > 7) {
-            // Invalid period — reset
-            d->state = DEMOD_WAITING;
-            d->data_carrier = false;
-            d->flag_count = 0;
-        } else if (bits == 7) {
-            // Flag byte (0x7E) detected
-            d->flag_count++;
-            d->flag_separator_seen = false;
-            d->data = 0;
-            d->bitcount = 0;
-
-            switch (d->state) {
-                case DEMOD_WAITING:
-                    d->state = DEMOD_JUST_SEEN_FLAG;
-                    d->data_carrier = true;
-                    break;
-
-                case DEMOD_JUST_SEEN_FLAG:
-                    // Stay in this state (consecutive flags)
-                    break;
-
-                case DEMOD_DECODING:
-                    // End of packet — check CRC
-                    if (d->packet_active && afsk_packet_terminate(d)) {
-                        // Valid packet! Send without CRC (last 2 bytes)
-                        if (d->callback != NULL && d->packet_size > 2) {
-                            d->callback(d->packet_buf, d->packet_size - 2, d->emphasis);
-                        }
-                    }
-                    d->packet_active = false;
-                    d->state = DEMOD_JUST_SEEN_FLAG;
-                    break;
-            }
-        } else {
-            // Data bits (1-6)
-            switch (d->state) {
-                case DEMOD_WAITING:
-                    break;
-                case DEMOD_JUST_SEEN_FLAG:
-                    d->state = DEMOD_DECODING;
-                    break;
-                case DEMOD_DECODING:
-                    break;
-            }
-
-            if (d->state == DEMOD_DECODING) {
-                // Handle flag separator tracking
-                if (bits != 1) {
-                    d->flag_count = 0;
-                } else {
-                    if (d->flag_count > 0 && !d->flag_separator_seen) {
-                        d->flag_separator_seen = true;
-                    } else {
-                        d->flag_count = 0;
-                    }
-                }
-
-                // --- Step 7: NRZ bit extraction with bit-stuffing removal ---
-                // Each "no transition" period = consecutive 1-bits
-                for (int k = 0; k < bits - 1; k++) {
-                    d->bitcount++;
-                    d->data >>= 1;
-                    d->data += 128;  // set MSB (bit = 1)
-
-                    if (d->bitcount == 8) {
-                        if (!d->packet_active) {
-                            afsk_packet_reset(d);
-                        }
-                        if (!afsk_packet_add_byte(d, (uint8_t)d->data)) {
-                            d->state = DEMOD_WAITING;
-                            d->data_carrier = false;
-                        }
-                        d->data = 0;
-                        d->bitcount = 0;
-                    }
-                }
-
-                // The zero-crossing itself represents a 0-bit,
-                // UNLESS it's a stuffed zero (after 5 consecutive 1s)
-                if (bits - 1 != 5) {
-                    d->bitcount++;
-                    d->data >>= 1;
-                    // MSB stays 0 (bit = 0)
-
-                    if (d->bitcount == 8) {
-                        if (!d->packet_active) {
-                            afsk_packet_reset(d);
-                        }
-                        if (!afsk_packet_add_byte(d, (uint8_t)d->data)) {
-                            d->state = DEMOD_WAITING;
-                            d->data_carrier = false;
-                        }
-                        d->data = 0;
-                        d->bitcount = 0;
-                    }
+    h->flag_window = (uint8_t)((h->flag_window << 1) | (bit & 1));
+    if (h->flag_window == FLAG) {
+        if (h->in_frame && h->bit_pos == 7 && h->frame_size >= AFSK_MIN_FRAME_SIZE) {
+            if (afsk_crc_calc(h->frame, (size_t)h->frame_size) == AX25_CRC_CORRECT &&
+                afsk_passes_ax25_sanity(h->frame, (size_t)h->frame_size, d->require_aprs_ui)) {
+                if (d->callback && h->frame_size > 2) {
+                    d->callback(h->frame, (size_t)h->frame_size - 2, d->emphasis);
                 }
             }
         }
+        afsk_hdlc_start(h);
+        return;
     }
 
-    // Save for next zero-crossing comparison
-    d->previous_fdiff = fdiff;
+    if (!h->in_frame) return;
 
-    // Advance counters
-    d->t++;
+    if (bit == 1) {
+        if (++h->one_run >= 7) {
+            afsk_hdlc_drop(h);
+            return;
+        }
+    } else if (h->one_run == 5) {
+        h->one_run = 0;
+        return;
+    } else {
+        h->one_run = 0;
+    }
 
-    d->j_td++;
-    if (d->j_td >= AFSK_FILTER_TAPS) d->j_td = 0;
+    afsk_hdlc_add_bit(h, bit);
+}
 
-    d->j_cd++;
-    if (d->j_cd >= AFSK_FILTER_TAPS) d->j_cd = 0;
+static void afsk_slicer_process(AfskDemodulator *d, float sample) {
+    AfskSlicerPll *pll = &d->slicer;
+    const int symbol = (sample > 0.0f) ? 1 : 0;
 
-    d->j_corr++;
-    if (d->j_corr >= AFSK_CORR_LEN) d->j_corr = 0;
+    pll->phase += pll->step;
+    while (pll->phase >= 1.0f) {
+        pll->phase -= 1.0f;
+        int decoded = afsk_nrzi_decode(d, symbol);
+        afsk_hdlc_process_bit(d, decoded);
+    }
+
+    if (symbol != pll->prev_symbol) {
+        float error = pll->phase - 0.5f;
+        error = afsk_clamp(error, -0.5f, 0.5f);
+
+        if (fabsf(error) <= pll->lock_error_window) {
+            pll->good_trans++;
+            pll->bad_trans = 0;
+            if (!pll->locked && pll->good_trans >= pll->lock_consecutive) {
+                pll->locked = true;
+                pll->integ *= 0.5f;
+            }
+        } else {
+            pll->good_trans = 0;
+            pll->bad_trans++;
+            if (pll->locked && fabsf(error) >= pll->unlock_error_window && pll->bad_trans >= pll->unlock_bad_limit) {
+                pll->locked = false;
+                pll->integ = 0.0f;
+            }
+        }
+
+        pll->integ = afsk_clamp(pll->integ + error, -pll->integ_clamp, pll->integ_clamp);
+        float delta = pll->kp * error + pll->ki * pll->integ;
+        pll->step = afsk_clamp(pll->step - delta, pll->step_min, pll->step_max);
+        pll->phase -= pll->phase_gain_acq * error;
+    }
+
+    pll->prev_symbol = symbol;
+}
+
+static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
+    float s = afsk_fir_filter(&d->bpf, sample);
+    float mixed_i = s * afsk_dds_cos(&d->osc);
+    float mixed_q = s * -afsk_dds_sin(&d->osc);
+    float fi = afsk_fir_filter(&d->i_filt, mixed_i);
+    float fq = afsk_fir_filter(&d->q_filt, mixed_q);
+    float delta_q = (fq * d->prev_i) - (fi * d->prev_q);
+    float mag_sq = (fi * fi) + (fq * fq);
+    float demod = 0.0f;
+    if (mag_sq > 0.0f) {
+        demod = (delta_q / mag_sq) * d->norm_gain;
+    }
+    demod = afsk_iir_filter(&d->out_lp, demod);
+#ifdef AFSK_DEMOD_STATS
+    if (demod < d->stats.demod_min) d->stats.demod_min = demod;
+    if (demod > d->stats.demod_max) d->stats.demod_max = demod;
+    d->stats.demod_sum += demod;
+    d->stats.samples++;
+#endif
+    if (demod > -0.006f && demod < 0.006f) {
+        demod = 1.0f;
+    }
+    d->prev_i = fi;
+    d->prev_q = fq;
+    afsk_dds_next(&d->osc);
+    afsk_slicer_process(d, demod);
 }

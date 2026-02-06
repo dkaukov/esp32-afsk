@@ -11,7 +11,7 @@
 #error "Missing test/third_party/dr_flac.h. See test/third_party/README.md."
 #endif
 
-#include "afsk_multi_demod.h"
+#include "afsk_demod.h"
 
 namespace {
 
@@ -36,8 +36,10 @@ static void resampler_init(LinearResampler *rs, uint32_t in_rate, uint32_t out_r
     rs->has_prev = false;
 }
 
-static void on_packet_decoded(const uint8_t *, size_t) {
-    // Counted by AfskMultiDemodulator.packet_count.
+static uint32_t g_packet_count = 0;
+
+static void on_packet_decoded(const uint8_t *, size_t, int) {
+    g_packet_count++;
 }
 
 static uint32_t decode_flac_and_count_packets(const char *path) {
@@ -50,8 +52,9 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
     const uint32_t target_rate = 48000;
     TEST_ASSERT_MESSAGE(sample_rate > 0, "Invalid FLAC sample rate.");
 
-    AfskMultiDemodulator demod;
-    afsk_multi_init(&demod, on_packet_decoded);
+    AfskDemodulator demod;
+    g_packet_count = 0;
+    afsk_demod_init(&demod, 0, on_packet_decoded);
 
     LinearResampler rs;
     resampler_init(&rs, sample_rate, target_rate);
@@ -84,7 +87,7 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
             while (rs.pos <= (double)rs.in_index) {
                 const double t = rs.pos - (double)(rs.in_index - 1);
                 const float out = rs.prev + (sample - rs.prev) * (float)t;
-                afsk_multi_process_sample(&demod, out);
+                afsk_demod_process_sample(&demod, out);
                 rs.pos += rs.step;
             }
 
@@ -93,10 +96,19 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
         }
     }
 
+#ifdef AFSK_DEMOD_STATS
+    if (demod.stats.samples > 0) {
+        const float mean = demod.stats.demod_sum / (float)demod.stats.samples;
+        printf("Demod stats for %s: min=%.6f max=%.6f mean=%.6f samples=%llu\n",
+               path, demod.stats.demod_min, demod.stats.demod_max, mean,
+               (unsigned long long)demod.stats.samples);
+    }
+#endif
+
     free(buffer);
     drflac_close(flac);
 
-    return demod.packet_count;
+    return g_packet_count;
 }
 
 }  // namespace
@@ -107,10 +119,10 @@ void tearDown() {}
 void test_decoder_fixtures_min_packets(void) {
     // TODO: Update min packet counts once fixtures are in place.
     const TestCase cases[] = {
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39.flac", 955},
+        {"test/fixtures/01_40-Mins-Traffic-on-144.39.flac", 980},
         {"test/fixtures/01_40-Mins-Traffic-on-144.39_20s.flac", 12},
         {"test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac", 49},
-        {"test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac", 957},
+        {"test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac", 930},
     };
 
     for (const auto &tc : cases) {
