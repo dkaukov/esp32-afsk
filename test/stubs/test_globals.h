@@ -9,4 +9,6 @@
 #include <Arduino.h>
 
 // Audio sampling rate — must match afsk_demod.h expectations
+#ifndef AUDIO_SAMPLE_RATE
 #define AUDIO_SAMPLE_RATE 48000
+#endif

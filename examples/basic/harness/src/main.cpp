@@ -34,8 +34,7 @@
  */
 
 #include <Arduino.h>
-#include "test_globals.h"
-#include "test_debug.h"
+#include "test/stubs/test_globals.h"
 #include "afsk_encoder.h"
 #include "afsk_multi_demod.h"
 

@@ -21,8 +21,13 @@
 #include <Arduino.h>
 #include <math.h>
 #include <string.h>
-#include "test_globals.h"
-#include "test_debug.h"
+#ifndef AUDIO_SAMPLE_RATE
+#define AUDIO_SAMPLE_RATE 48000
+#endif
+
+#ifndef _LOGW
+#define _LOGW(...) do { } while (0)
+#endif
 
 // ============================================================================
 // SECTION 1: AFSK MODEM CONSTANTS (identical to aprs.h)
