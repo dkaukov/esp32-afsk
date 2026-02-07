@@ -42,6 +42,7 @@ Pipeline:
 #define AFSK_MAX_BPF_TAPS 61
 #define AFSK_MAX_LPF_TAPS 41
 
+
 // Fixed-point helpers removed (float DSP path is faster on ESP32).
 
 // CRC-CCITT lookup table (same as ax25-java)
@@ -451,15 +452,17 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
 
     afsk_dds_init(&d->osc, sample_rate, center);
 
-    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f);
+    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * 0.85f);
     if ((bpf_len & 1) == 0) bpf_len++;
     if (bpf_len > AFSK_MAX_BPF_TAPS) bpf_len = AFSK_MAX_BPF_TAPS | 1;
+    if (bpf_len < 9) bpf_len = 9;
     afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
     afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
 
-    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f);
+    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * 0.85f);
     if ((lpf_len & 1) == 0) lpf_len++;
     if (lpf_len > AFSK_MAX_LPF_TAPS) lpf_len = AFSK_MAX_LPF_TAPS | 1;
+    if (lpf_len < 7) lpf_len = 7;
     afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
     afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
     afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);

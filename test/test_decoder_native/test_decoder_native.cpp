@@ -119,10 +119,10 @@ void tearDown() {}
 void test_decoder_fixtures_min_packets(void) {
     // TODO: Update min packet counts once fixtures are in place.
     const TestCase cases[] = {
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39.flac", 980},
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39_20s.flac", 12},
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac", 49},
-        {"test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac", 930},
+        {"test/fixtures/01_40-Mins-Traffic-on-144.39.flac", 994},
+        {"test/fixtures/01_40-Mins-Traffic-on-144.39_20s.flac", 13},
+        {"test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac", 51},
+        {"test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac", 935},
     };
 
     for (const auto &tc : cases) {

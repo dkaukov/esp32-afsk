@@ -51,7 +51,7 @@ static void test_decoder_embedded(void) {
     Serial.println(msg);
 
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(13, g_packets, "Unexpected packet count");
-    TEST_ASSERT_TRUE_MESSAGE(cpu_pct <= 60.0, "CPU usage exceeds 60%");
+    TEST_ASSERT_TRUE_MESSAGE(cpu_pct < 50.0, "CPU usage exceeds 50%");
 }
 
 void setup() {
