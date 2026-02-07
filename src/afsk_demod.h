@@ -177,7 +177,6 @@ static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *tap
 }
 
 static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
-    if (f->len <= 0) return 0.0f;
     float y = 0.0f;
     dsps_fir_f32(&f->fir, &x, &y, 1);
     return y;
