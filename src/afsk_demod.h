@@ -452,14 +452,14 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
 
     afsk_dds_init(&d->osc, sample_rate, center);
 
-    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * 0.85f);
+    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * 0.95f);
     if ((bpf_len & 1) == 0) bpf_len++;
     if (bpf_len > AFSK_MAX_BPF_TAPS) bpf_len = AFSK_MAX_BPF_TAPS | 1;
     if (bpf_len < 9) bpf_len = 9;
     afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
     afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
 
-    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * 0.85f);
+    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * 0.95f);
     if ((lpf_len & 1) == 0) lpf_len++;
     if (lpf_len > AFSK_MAX_LPF_TAPS) lpf_len = AFSK_MAX_LPF_TAPS | 1;
     if (lpf_len < 7) lpf_len = 7;
