@@ -28,22 +28,19 @@ Pipeline:
 #define AFSK_SAMPLE_RATE 48000
 #endif
 
-#define AFSK_BAUD_RATE   1200.0f
-#define AFSK_MARK_FREQ   1200.0f
-#define AFSK_SPACE_FREQ  2200.0f
+#define AFSK_BAUD_RATE  1200.0f
+#define AFSK_MARK_FREQ  1200.0f
+#define AFSK_SPACE_FREQ 2200.0f
 
 #define AFSK_MAX_FRAME_SIZE 360
 #define AFSK_MIN_FRAME_SIZE 9
 
-#define AX25_CRC_CORRECT   0xF0B8
+#define AX25_CRC_CORRECT 0xF0B8
 #define CRC_CCITT_INIT_VAL 0xFFFF
 
 // Filter limits (static buffers sized for 48 kHz / 1200 baud)
 #define AFSK_MAX_BPF_TAPS 61
 #define AFSK_MAX_LPF_TAPS 41
-
-
-// Fixed-point helpers removed (float DSP path is faster on ESP32).
 
 // CRC-CCITT lookup table (same as ax25-java)
 static const uint16_t crc_ccitt_tab[256] PROGMEM = {
@@ -279,6 +276,14 @@ static inline float afsk_clamp(float v, float lo, float hi) {
     return (v < lo) ? lo : (v > hi ? hi : v);
 }
 
+static inline int afsk_clamp_int(int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi ? hi : v);
+}
+
+static inline int afsk_make_odd(int v) {
+    return (v & 1) ? v : (v + 1);
+}
+
 static void afsk_slicer_init(AfskSlicerPll *pll, float sample_rate, float baud_rate) {
     float nominal = baud_rate / sample_rate;
     float ppm = 5100.0f * 1e-6f;
@@ -363,43 +368,6 @@ static inline uint16_t afsk_crc_calc(const uint8_t *data, size_t len) {
     return crc;
 }
 
-static int afsk_validate_ax25_addresses(const uint8_t *buf, int end) {
-    int i = 0;
-    int blocks = 0;
-    while (true) {
-        if (i + 7 > end) return -1;
-        for (int k = 0; k < 6; k++) {
-            int b = buf[i + k] & 0xFF;
-            if ((b & 0x01) != 0) return -1;
-            int ch = (b >> 1) & 0x7F;
-            bool ok = (ch == 0x20) || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z');
-            if (!ok) return -1;
-        }
-        int ssid = buf[i + 6] & 0xFF;
-        bool last = (ssid & 0x01) != 0;
-        blocks++;
-        i += 7;
-        if (blocks == 1 && last) return -1;
-        if (last) break;
-        if (blocks >= 10) return -1;
-    }
-    if (blocks < 2) return -1;
-    return i;
-}
-
-static bool afsk_passes_ax25_sanity(const uint8_t *frame, size_t len, bool require_aprs_ui) {
-    if (len < 2) return false;
-    int end = (int)len - 2;
-    int i = afsk_validate_ax25_addresses(frame, end);
-    if (i < 0) return false;
-    if (require_aprs_ui) {
-        if (i + 2 > end) return false;
-        int control = frame[i] & 0xFF;
-        int pid = frame[i + 1] & 0xFF;
-        return control == 0x03 && pid == 0xF0;
-    }
-    return true;
-}
 
 // ============================================================================
 // Demodulator state
@@ -428,8 +396,6 @@ typedef struct {
 
     AfskHdlcDeframer hdlc;
 
-    bool require_aprs_ui;
-
 #ifdef AFSK_DEMOD_STATS
     AfskDemodStats stats;
 #endif
@@ -443,8 +409,6 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
     memset(d, 0, sizeof(AfskDemodulator));
     d->emphasis = emphasis;
     d->callback = callback;
-    d->require_aprs_ui = true;
-
     float sample_rate = (float)AFSK_SAMPLE_RATE;
     float baud = AFSK_BAUD_RATE;
     float center = (AFSK_MARK_FREQ + AFSK_SPACE_FREQ) * 0.5f;
@@ -452,17 +416,17 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
 
     afsk_dds_init(&d->osc, sample_rate, center);
 
-    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * 0.95f);
-    if ((bpf_len & 1) == 0) bpf_len++;
-    if (bpf_len > AFSK_MAX_BPF_TAPS) bpf_len = AFSK_MAX_BPF_TAPS | 1;
-    if (bpf_len < 9) bpf_len = 9;
+    const float bpf_scale = 0.95f;
+    int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * bpf_scale);
+    bpf_len = afsk_make_odd(bpf_len);
+    bpf_len = afsk_clamp_int(bpf_len, 9, AFSK_MAX_BPF_TAPS | 1);
     afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
     afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
 
-    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * 0.95f);
-    if ((lpf_len & 1) == 0) lpf_len++;
-    if (lpf_len > AFSK_MAX_LPF_TAPS) lpf_len = AFSK_MAX_LPF_TAPS | 1;
-    if (lpf_len < 7) lpf_len = 7;
+    const float lpf_scale = 0.95f;
+    int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
+    lpf_len = afsk_make_odd(lpf_len);
+    lpf_len = afsk_clamp_int(lpf_len, 7, AFSK_MAX_LPF_TAPS | 1);
     afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
     afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
     afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);
@@ -501,8 +465,7 @@ static void afsk_hdlc_process_bit(AfskDemodulator *d, int bit) {
     h->flag_window = (uint8_t)((h->flag_window << 1) | (bit & 1));
     if (h->flag_window == FLAG) {
         if (h->in_frame && h->bit_pos == 7 && h->frame_size >= AFSK_MIN_FRAME_SIZE) {
-            if (afsk_crc_calc(h->frame, (size_t)h->frame_size) == AX25_CRC_CORRECT &&
-                afsk_passes_ax25_sanity(h->frame, (size_t)h->frame_size, d->require_aprs_ui)) {
+            if (afsk_crc_calc(h->frame, (size_t)h->frame_size) == AX25_CRC_CORRECT) {
                 if (d->callback && h->frame_size > 2) {
                     d->callback(h->frame, (size_t)h->frame_size - 2, d->emphasis);
                 }
@@ -572,7 +535,7 @@ static void afsk_slicer_process(AfskDemodulator *d, float sample) {
 static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
     float s = afsk_fir_filter(&d->bpf, sample);
     float mixed_i = s * afsk_dds_cos(&d->osc);
-    float mixed_q = s * -afsk_dds_sin(&d->osc);
+    float mixed_q = -s * afsk_dds_sin(&d->osc);
     float fi = afsk_fir_filter(&d->i_filt, mixed_i);
     float fq = afsk_fir_filter(&d->q_filt, mixed_q);
     float delta_q = (fq * d->prev_i) - (fi * d->prev_q);
@@ -595,4 +558,12 @@ static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
     d->prev_q = fq;
     afsk_dds_next(&d->osc);
     afsk_slicer_process(d, demod);
+}
+
+static inline void afsk_demod_process_samples_i16(AfskDemodulator *d, const int16_t *samples, size_t count) {
+    if (!samples || count == 0) return;
+    for (size_t i = 0; i < count; i++) {
+        float s = (float)samples[i] / 32768.0f;
+        afsk_demod_process_sample(d, s);
+    }
 }
