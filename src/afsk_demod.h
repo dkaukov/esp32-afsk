@@ -20,6 +20,16 @@ Pipeline:
 #include <stdbool.h>
 #include <string.h>
 
+#if defined(ESP32)
+#include <esp_dsp.h>
+#include <dsps_fir.h>
+#define AFSK_USE_ESP_DSP 1
+#define AFSK_ALIGN16 __attribute__((aligned(16)))
+#else
+#define AFSK_USE_ESP_DSP 0
+#define AFSK_ALIGN16
+#endif
+
 #ifndef PROGMEM
 #define PROGMEM
 #endif
@@ -142,9 +152,37 @@ static void afsk_design_bandpass_kaiser(float *out, int num_taps, float low_hz, 
 }
 
 // ============================================================================
-// FIR (direct-form, circular buffer) - float
+// FIR - float
 // ============================================================================
 
+#if AFSK_USE_ESP_DSP
+typedef struct {
+    fir_f32_t fir;
+    float *coeffs;
+    float *delay;
+    int len;
+} AfskFastFIR;
+
+static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len) {
+    if (state_len < len + 4) {
+        f->len = 0;
+        return;
+    }
+    f->len = len;
+    f->coeffs = taps_store;
+    f->delay = state_store;
+    for (int i = 0; i < len; i++) f->coeffs[i] = taps[i];
+    memset(f->delay, 0, sizeof(float) * (size_t)state_len);
+    dsps_fir_init_f32(&f->fir, f->coeffs, f->delay, f->len);
+}
+
+static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
+    if (f->len <= 0) return 0.0f;
+    float y = 0.0f;
+    dsps_fir_f32(&f->fir, &x, &y, 1);
+    return y;
+}
+#else
 typedef struct {
     float *taps;
     float *state;
@@ -175,6 +213,7 @@ static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
     if (f->idx >= f->len) f->idx = 0;
     return acc;
 }
+#endif
 
 // ============================================================================
 // IIR LPF (single pole) - float
@@ -381,11 +420,11 @@ typedef struct {
     AfskFastFIR bpf;
     AfskFastFIR i_filt;
     AfskFastFIR q_filt;
-    float bpf_taps[AFSK_MAX_BPF_TAPS];
-    float bpf_state[AFSK_MAX_BPF_TAPS];
-    float lpf_taps[AFSK_MAX_LPF_TAPS];
-    float i_state[AFSK_MAX_LPF_TAPS];
-    float q_state[AFSK_MAX_LPF_TAPS];
+    float bpf_taps[AFSK_MAX_BPF_TAPS] AFSK_ALIGN16;
+    float bpf_state[AFSK_MAX_BPF_TAPS + 4] AFSK_ALIGN16;
+    float lpf_taps[AFSK_MAX_LPF_TAPS] AFSK_ALIGN16;
+    float i_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
+    float q_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
     AfskIIR1 out_lp;
     float norm_gain;
     float prev_i;
@@ -421,15 +460,15 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
     bpf_len = afsk_make_odd(bpf_len);
     bpf_len = afsk_clamp_int(bpf_len, 9, AFSK_MAX_BPF_TAPS | 1);
     afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
-    afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
+    afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, AFSK_MAX_BPF_TAPS + 4);
 
     const float lpf_scale = 0.95f;
     int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
     lpf_len = afsk_make_odd(lpf_len);
     lpf_len = afsk_clamp_int(lpf_len, 7, AFSK_MAX_LPF_TAPS | 1);
     afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
-    afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
-    afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);
+    afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, AFSK_MAX_LPF_TAPS + 4);
+    afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, AFSK_MAX_LPF_TAPS + 4);
 
     d->norm_gain = 1.0f / (2.0f * (float)M_PI * (dev / sample_rate));
     afsk_iir_init(&d->out_lp, sample_rate, baud * 3.0f);
