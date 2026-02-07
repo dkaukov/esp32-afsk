@@ -24,6 +24,11 @@ Pipeline:
 #define PROGMEM
 #endif
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <liquid.h>
+#pragma GCC diagnostic pop
+
 #ifndef AFSK_SAMPLE_RATE
 #define AFSK_SAMPLE_RATE 48000
 #endif
@@ -79,101 +84,31 @@ static const uint16_t crc_ccitt_tab[256] PROGMEM = {
 };
 
 // ============================================================================
-// FIR designer (ported from afsk-java)
-// ============================================================================
-
-static inline float afsk_bessel_i0(float x) {
-    double sum = 1.0;
-    double y = (x * x) / 4.0;
-    double term = y;
-    for (int k = 1; k < 30; k++) {
-        sum += term;
-        term *= y / (k * k);
-    }
-    return (float)sum;
-}
-
-static inline float afsk_kaiser_beta(float attenuation_db) {
-    if (attenuation_db > 50.0f) {
-        return 0.1102f * (attenuation_db - 8.7f);
-    } else if (attenuation_db >= 21.0f) {
-        return 0.5842f * powf(attenuation_db - 21.0f, 0.4f) + 0.07886f * (attenuation_db - 21.0f);
-    }
-    return 0.0f;
-}
-
-static inline void afsk_normalize_unity_gain(float *taps, int len) {
-    float sum = 0.0f;
-    for (int i = 0; i < len; i++) sum += taps[i];
-    if (sum == 0.0f) return;
-    float inv = 1.0f / sum;
-    for (int i = 0; i < len; i++) taps[i] *= inv;
-}
-
-static void afsk_design_lowpass_hamming(float *out, int num_taps, float cutoff_hz, float sample_rate) {
-    if ((num_taps & 1) == 0) num_taps++;
-    float fc = cutoff_hz / sample_rate;
-    int mid = num_taps / 2;
-    for (int i = 0; i < num_taps; i++) {
-        int n = i - mid;
-        float sinc = (n == 0) ? 2.0f * fc : sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
-        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * i / (num_taps - 1));
-        out[i] = sinc * w;
-    }
-    afsk_normalize_unity_gain(out, num_taps);
-}
-
-static void afsk_design_bandpass_kaiser(float *out, int num_taps, float low_hz, float high_hz, float sample_rate, float attenuation_db) {
-    if ((num_taps & 1) == 0) num_taps++;
-    float fl = low_hz / sample_rate;
-    float fh = high_hz / sample_rate;
-    int mid = num_taps / 2;
-    float beta = afsk_kaiser_beta(attenuation_db);
-    float denom = afsk_bessel_i0(beta);
-    for (int i = 0; i < num_taps; i++) {
-        int n = i - mid;
-        float sinc_h = (n == 0) ? 2.0f * fh : sinf(2.0f * (float)M_PI * fh * n) / ((float)M_PI * n);
-        float sinc_l = (n == 0) ? 2.0f * fl : sinf(2.0f * (float)M_PI * fl * n) / ((float)M_PI * n);
-        float r = (2.0f * i) / (num_taps - 1) - 1.0f;
-        float w = afsk_bessel_i0(beta * sqrtf(1.0f - r * r)) / denom;
-        out[i] = (sinc_h - sinc_l) * w;
-    }
-    // Band-pass is normalized downstream to avoid excessive tap magnitudes.
-}
-
-// ============================================================================
-// FIR (direct-form, circular buffer) - float
+// FIR (liquidDSP) - float
 // ============================================================================
 
 typedef struct {
-    float *taps;
-    float *state;
+    firfilt_rrrf q;
     int len;
-    int idx;
 } AfskFastFIR;
 
 static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len) {
-    f->len = len;
-    f->idx = 0;
-    f->taps = taps_store;
-    f->state = state_store;
-    for (int i = 0; i < len; i++) f->taps[i] = taps[i];
-    if (state_len > 0) {
-        memset(f->state, 0, sizeof(float) * (size_t)state_len);
+    (void)state_store;
+    (void)state_len;
+    if (f->q) {
+        firfilt_rrrf_destroy(f->q);
+        f->q = NULL;
     }
+    f->len = len;
+    for (int i = 0; i < len; i++) taps_store[i] = taps[i];
+    f->q = firfilt_rrrf_create(taps_store, len);
 }
 
 static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
-    f->state[f->idx] = x;
-    float acc = 0.0f;
-    int s = f->idx;
-    for (int i = 0; i < f->len; i++) {
-        acc += f->taps[i] * f->state[s];
-        s = (s == 0) ? (f->len - 1) : (s - 1);
-    }
-    f->idx++;
-    if (f->idx >= f->len) f->idx = 0;
-    return acc;
+    float y = 0.0f;
+    firfilt_rrrf_push(f->q, x);
+    firfilt_rrrf_execute(f->q, &y);
+    return y;
 }
 
 // ============================================================================
@@ -420,14 +355,22 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
     int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * bpf_scale);
     bpf_len = afsk_make_odd(bpf_len);
     bpf_len = afsk_clamp_int(bpf_len, 9, AFSK_MAX_BPF_TAPS | 1);
-    afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
+    const float bpf_bw = (AFSK_SPACE_FREQ - AFSK_MARK_FREQ);
+    const float bpf_fc = (AFSK_MARK_FREQ + AFSK_SPACE_FREQ) * 0.5f;
+    liquid_firdes_kaiser((unsigned int)bpf_len, (bpf_bw * 0.5f) / sample_rate, 30.0f, 0.0f, d->bpf_taps);
+    const int bpf_mid = bpf_len / 2;
+    const float bpf_w = 2.0f * (float)M_PI * (bpf_fc / sample_rate);
+    for (int i = 0; i < bpf_len; i++) {
+        const float n = (float)(i - bpf_mid);
+        d->bpf_taps[i] *= 2.0f * cosf(bpf_w * n);
+    }
     afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
 
     const float lpf_scale = 0.95f;
     int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
     lpf_len = afsk_make_odd(lpf_len);
     lpf_len = afsk_clamp_int(lpf_len, 7, AFSK_MAX_LPF_TAPS | 1);
-    afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
+    liquid_firdes_kaiser((unsigned int)lpf_len, dev / sample_rate, 60.0f, 0.0f, d->lpf_taps);
     afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
     afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);
 
