@@ -24,10 +24,18 @@ Pipeline:
 #define PROGMEM
 #endif
 
+#if defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic ignored "-Wreturn-type-c-linkage"
+#include <liquid.h>
+#pragma GCC diagnostic pop
+#else
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <liquid.h>
 #pragma GCC diagnostic pop
+#endif
 
 #ifndef AFSK_SAMPLE_RATE
 #define AFSK_SAMPLE_RATE 48000
@@ -42,6 +50,8 @@ Pipeline:
 
 #define AX25_CRC_CORRECT 0xF0B8
 #define CRC_CCITT_INIT_VAL 0xFFFF
+
+#define AFSK_DEMOD_MAGIC 0x4146534BU
 
 // Filter limits (static buffers sized for 48 kHz / 1200 baud)
 #define AFSK_MAX_BPF_TAPS 61
@@ -309,6 +319,7 @@ static inline uint16_t afsk_crc_calc(const uint8_t *data, size_t len) {
 // ============================================================================
 
 typedef struct {
+    uint32_t magic;
     int emphasis;
     AfskPacketCallback callback;
 
@@ -340,8 +351,27 @@ typedef struct {
 // Init
 // ============================================================================
 
+static void afsk_demod_deinit(AfskDemodulator *d) {
+    if (d == NULL) return;
+    if (d->magic != AFSK_DEMOD_MAGIC) return;
+    if (d->bpf.q) {
+        firfilt_rrrf_destroy(d->bpf.q);
+        d->bpf.q = NULL;
+    }
+    if (d->i_filt.q) {
+        firfilt_rrrf_destroy(d->i_filt.q);
+        d->i_filt.q = NULL;
+    }
+    if (d->q_filt.q) {
+        firfilt_rrrf_destroy(d->q_filt.q);
+        d->q_filt.q = NULL;
+    }
+    d->magic = 0;
+}
+
 static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback callback) {
     memset(d, 0, sizeof(AfskDemodulator));
+    d->magic = AFSK_DEMOD_MAGIC;
     d->emphasis = emphasis;
     d->callback = callback;
     float sample_rate = (float)AFSK_SAMPLE_RATE;
