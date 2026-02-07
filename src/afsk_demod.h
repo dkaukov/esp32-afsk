@@ -19,11 +19,25 @@ Pipeline:
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#if defined(AFSK_DEMOD_PROFILE) && defined(ESP32)
+#include "xtensa/core-macros.h"
+#endif
 
 #ifndef PROGMEM
 #define PROGMEM
 #endif
 
+#if defined(ESP32)
+#include <esp_dsp.h>
+#include <dsps_fir.h>
+#define AFSK_USE_ESP_DSP 1
+#define AFSK_ALIGN16 __attribute__((aligned(16)))
+#else
+#define AFSK_USE_ESP_DSP 0
+#define AFSK_ALIGN16
+#endif
+
+#if !AFSK_USE_ESP_DSP
 #if defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -35,6 +49,7 @@ Pipeline:
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <liquid.h>
 #pragma GCC diagnostic pop
+#endif
 #endif
 
 #ifndef AFSK_SAMPLE_RATE
@@ -50,6 +65,7 @@ Pipeline:
 
 #define AX25_CRC_CORRECT 0xF0B8
 #define CRC_CCITT_INIT_VAL 0xFFFF
+
 
 #define AFSK_DEMOD_MAGIC 0x4146534BU
 
@@ -94,9 +110,96 @@ static const uint16_t crc_ccitt_tab[256] PROGMEM = {
 };
 
 // ============================================================================
+// FIR designer (ported from afsk-java)
+// ============================================================================
+
+static inline float afsk_bessel_i0(float x) {
+    double sum = 1.0;
+    double y = (x * x) / 4.0;
+    double term = y;
+    for (int k = 1; k < 30; k++) {
+        sum += term;
+        term *= y / (k * k);
+    }
+    return (float)sum;
+}
+
+static inline float afsk_kaiser_beta(float attenuation_db) {
+    if (attenuation_db > 50.0f) {
+        return 0.1102f * (attenuation_db - 8.7f);
+    } else if (attenuation_db >= 21.0f) {
+        return 0.5842f * powf(attenuation_db - 21.0f, 0.4f) + 0.07886f * (attenuation_db - 21.0f);
+    }
+    return 0.0f;
+}
+
+static inline void afsk_normalize_unity_gain(float *taps, int len) {
+    float sum = 0.0f;
+    for (int i = 0; i < len; i++) sum += taps[i];
+    if (sum == 0.0f) return;
+    float inv = 1.0f / sum;
+    for (int i = 0; i < len; i++) taps[i] *= inv;
+}
+
+static void afsk_design_lowpass_hamming(float *out, int num_taps, float cutoff_hz, float sample_rate) {
+    if ((num_taps & 1) == 0) num_taps++;
+    float fc = cutoff_hz / sample_rate;
+    int mid = num_taps / 2;
+    for (int i = 0; i < num_taps; i++) {
+        int n = i - mid;
+        float sinc = (n == 0) ? 2.0f * fc : sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
+        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * i / (num_taps - 1));
+        out[i] = sinc * w;
+    }
+    afsk_normalize_unity_gain(out, num_taps);
+}
+
+static void afsk_design_bandpass_kaiser(float *out, int num_taps, float low_hz, float high_hz, float sample_rate, float attenuation_db) {
+    if ((num_taps & 1) == 0) num_taps++;
+    float fl = low_hz / sample_rate;
+    float fh = high_hz / sample_rate;
+    int mid = num_taps / 2;
+    float beta = afsk_kaiser_beta(attenuation_db);
+    float denom = afsk_bessel_i0(beta);
+    for (int i = 0; i < num_taps; i++) {
+        int n = i - mid;
+        float sinc_h = (n == 0) ? 2.0f * fh : sinf(2.0f * (float)M_PI * fh * n) / ((float)M_PI * n);
+        float sinc_l = (n == 0) ? 2.0f * fl : sinf(2.0f * (float)M_PI * fl * n) / ((float)M_PI * n);
+        float r = (2.0f * i) / (num_taps - 1) - 1.0f;
+        float w = afsk_bessel_i0(beta * sqrtf(1.0f - r * r)) / denom;
+        out[i] = (sinc_h - sinc_l) * w;
+    }
+    // Band-pass is normalized downstream to avoid excessive tap magnitudes.
+}
+
+// ============================================================================
 // FIR (liquidDSP) - float
 // ============================================================================
 
+#if AFSK_USE_ESP_DSP
+typedef struct {
+    fir_f32_t fir;
+    float *coeffs;
+    float *delay;
+    int len;
+} AfskFastFIR;
+
+static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len) {
+    if (state_len < (len + 4)) return;
+    f->len = len;
+    f->coeffs = taps_store;
+    f->delay = state_store;
+    for (int i = 0; i < len; i++) taps_store[i] = taps[i];
+    memset(f->delay, 0, sizeof(float) * (size_t)(len + 4));
+    dsps_fir_init_f32(&f->fir, f->coeffs, f->delay, len);
+}
+
+static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
+    float y = 0.0f;
+    dsps_fir_f32(&f->fir, &x, &y, 1);
+    return y;
+}
+#else
 typedef struct {
     firfilt_rrrf q;
     int len;
@@ -120,6 +223,7 @@ static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
     firfilt_rrrf_execute(f->q, &y);
     return y;
 }
+#endif
 
 // ============================================================================
 // IIR LPF (single pole) - float
@@ -313,6 +417,27 @@ static inline uint16_t afsk_crc_calc(const uint8_t *data, size_t len) {
     return crc;
 }
 
+#ifdef AFSK_DEMOD_PROFILE
+typedef struct {
+    uint64_t samples;
+    uint64_t cycles_total;
+    uint64_t cycles_bpf;
+    uint64_t cycles_mix;
+    uint64_t cycles_lpf_i;
+    uint64_t cycles_lpf_q;
+    uint64_t cycles_demod;
+    uint64_t cycles_slicer;
+} AfskDemodProfile;
+
+static inline uint32_t afsk_ccount(void) {
+#if defined(ESP32)
+    return XTHAL_GET_CCOUNT();
+#else
+    return 0;
+#endif
+}
+#endif
+
 
 // ============================================================================
 // Demodulator state
@@ -327,11 +452,11 @@ typedef struct {
     AfskFastFIR bpf;
     AfskFastFIR i_filt;
     AfskFastFIR q_filt;
-    float bpf_taps[AFSK_MAX_BPF_TAPS];
-    float bpf_state[AFSK_MAX_BPF_TAPS];
-    float lpf_taps[AFSK_MAX_LPF_TAPS];
-    float i_state[AFSK_MAX_LPF_TAPS];
-    float q_state[AFSK_MAX_LPF_TAPS];
+    float bpf_taps[AFSK_MAX_BPF_TAPS] AFSK_ALIGN16;
+    float bpf_state[AFSK_MAX_BPF_TAPS + 4] AFSK_ALIGN16;
+    float lpf_taps[AFSK_MAX_LPF_TAPS] AFSK_ALIGN16;
+    float i_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
+    float q_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
     AfskIIR1 out_lp;
     float norm_gain;
     float prev_i;
@@ -345,6 +470,9 @@ typedef struct {
 #ifdef AFSK_DEMOD_STATS
     AfskDemodStats stats;
 #endif
+#ifdef AFSK_DEMOD_PROFILE
+    AfskDemodProfile profile;
+#endif
 } AfskDemodulator;
 
 // ============================================================================
@@ -354,6 +482,7 @@ typedef struct {
 static void afsk_demod_deinit(AfskDemodulator *d) {
     if (d == NULL) return;
     if (d->magic != AFSK_DEMOD_MAGIC) return;
+#if !AFSK_USE_ESP_DSP
     if (d->bpf.q) {
         firfilt_rrrf_destroy(d->bpf.q);
         d->bpf.q = NULL;
@@ -366,6 +495,7 @@ static void afsk_demod_deinit(AfskDemodulator *d) {
         firfilt_rrrf_destroy(d->q_filt.q);
         d->q_filt.q = NULL;
     }
+#endif
     d->magic = 0;
 }
 
@@ -385,24 +515,16 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
     int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * bpf_scale);
     bpf_len = afsk_make_odd(bpf_len);
     bpf_len = afsk_clamp_int(bpf_len, 9, AFSK_MAX_BPF_TAPS | 1);
-    const float bpf_bw = (AFSK_SPACE_FREQ - AFSK_MARK_FREQ);
-    const float bpf_fc = (AFSK_MARK_FREQ + AFSK_SPACE_FREQ) * 0.5f;
-    liquid_firdes_kaiser((unsigned int)bpf_len, (bpf_bw * 0.5f) / sample_rate, 30.0f, 0.0f, d->bpf_taps);
-    const int bpf_mid = bpf_len / 2;
-    const float bpf_w = 2.0f * (float)M_PI * (bpf_fc / sample_rate);
-    for (int i = 0; i < bpf_len; i++) {
-        const float n = (float)(i - bpf_mid);
-        d->bpf_taps[i] *= 2.0f * cosf(bpf_w * n);
-    }
-    afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, bpf_len);
+    afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
+    afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, AFSK_MAX_BPF_TAPS + 4);
 
     const float lpf_scale = 0.95f;
     int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
     lpf_len = afsk_make_odd(lpf_len);
     lpf_len = afsk_clamp_int(lpf_len, 7, AFSK_MAX_LPF_TAPS | 1);
-    liquid_firdes_kaiser((unsigned int)lpf_len, dev / sample_rate, 60.0f, 0.0f, d->lpf_taps);
-    afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, lpf_len);
-    afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, lpf_len);
+    afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
+    afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, AFSK_MAX_LPF_TAPS + 4);
+    afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, AFSK_MAX_LPF_TAPS + 4);
 
     d->norm_gain = 1.0f / (2.0f * (float)M_PI * (dev / sample_rate));
     afsk_iir_init(&d->out_lp, sample_rate, baud * 3.0f);
@@ -506,11 +628,36 @@ static void afsk_slicer_process(AfskDemodulator *d, float sample) {
 }
 
 static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
+#ifdef AFSK_DEMOD_PROFILE
+    uint32_t t_start = afsk_ccount();
+    uint32_t t0 = t_start;
+    uint32_t t1 = t_start;
+#endif
     float s = afsk_fir_filter(&d->bpf, sample);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_bpf += (uint32_t)(t1 - t0);
+    t0 = t1;
+#endif
     float mixed_i = s * afsk_dds_cos(&d->osc);
     float mixed_q = -s * afsk_dds_sin(&d->osc);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_mix += (uint32_t)(t1 - t0);
+    t0 = t1;
+#endif
     float fi = afsk_fir_filter(&d->i_filt, mixed_i);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_lpf_i += (uint32_t)(t1 - t0);
+    t0 = t1;
+#endif
     float fq = afsk_fir_filter(&d->q_filt, mixed_q);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_lpf_q += (uint32_t)(t1 - t0);
+    t0 = t1;
+#endif
     float delta_q = (fq * d->prev_i) - (fi * d->prev_q);
     float mag_sq = (fi * fi) + (fq * fq);
     float demod = 0.0f;
@@ -530,7 +677,25 @@ static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
     d->prev_i = fi;
     d->prev_q = fq;
     afsk_dds_next(&d->osc);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_demod += (uint32_t)(t1 - t0);
+    t0 = t1;
+#endif
     afsk_slicer_process(d, demod);
+#ifdef AFSK_DEMOD_PROFILE
+    t1 = afsk_ccount();
+    d->profile.cycles_slicer += (uint32_t)(t1 - t0);
+    d->profile.cycles_total += (uint32_t)(t1 - t_start);
+    d->profile.samples++;
+#endif
+}
+
+static inline void afsk_demod_process_samples_f32(AfskDemodulator *d, const float *samples, size_t count) {
+    if (!samples || count == 0) return;
+    for (size_t i = 0; i < count; i++) {
+        afsk_demod_process_sample(d, samples[i]);
+    }
 }
 
 static inline void afsk_demod_process_samples_i16(AfskDemodulator *d, const int16_t *samples, size_t count) {

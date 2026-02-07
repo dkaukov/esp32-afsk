@@ -3,6 +3,8 @@
 
 #include "unity.h"
 
+#define AFSK_DEMOD_PROFILE 1
+
 #include "afsk_demod.h"
 #include "embedded_audio.h"
 
@@ -19,10 +21,7 @@ static void test_decoder_embedded(void) {
     afsk_demod_init(&g_demod, 0, on_packet_decoded);
 
     int64_t start = esp_timer_get_time();
-    for (uint32_t i = 0; i < EMBEDDED_AUDIO_SAMPLES; i++) {
-        float s = (float)EMBEDDED_AUDIO[i] / 32768.0f;
-        afsk_demod_process_sample(&g_demod, s);
-    }
+    afsk_demod_process_samples_i16(&g_demod, EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
     int64_t end = esp_timer_get_time();
     TEST_MESSAGE("DONE");
 
@@ -49,6 +48,39 @@ static void test_decoder_embedded(void) {
              cpu_pct);
     //TEST_MESSAGE(msg);
     Serial.println(msg);
+
+#ifdef AFSK_DEMOD_PROFILE
+    const uint64_t cycles_total = g_demod.profile.cycles_total;
+    const uint64_t samples = g_demod.profile.samples;
+    if (cycles_total > 0 && samples > 0) {
+        const float cps = (float)cycles_total / (float)samples;
+        const float pct_bpf = (float)g_demod.profile.cycles_bpf * 100.0f / (float)cycles_total;
+        const float pct_mix = (float)g_demod.profile.cycles_mix * 100.0f / (float)cycles_total;
+        const float pct_lpf_i = (float)g_demod.profile.cycles_lpf_i * 100.0f / (float)cycles_total;
+        const float pct_lpf_q = (float)g_demod.profile.cycles_lpf_q * 100.0f / (float)cycles_total;
+        const float pct_demod = (float)g_demod.profile.cycles_demod * 100.0f / (float)cycles_total;
+        const float pct_slicer = (float)g_demod.profile.cycles_slicer * 100.0f / (float)cycles_total;
+        Serial.printf("\nPROFILE (cycles)\n"
+                      "total     %llu\n"
+                      "samples   %llu\n"
+                      "cps       %.2f\n"
+                      "bpf       %5.1f%%\n"
+                      "mix       %5.1f%%\n"
+                      "lpf_i     %5.1f%%\n"
+                      "lpf_q     %5.1f%%\n"
+                      "demod     %5.1f%%\n"
+                      "slicer    %5.1f%%\n",
+                      (unsigned long long)cycles_total,
+                      (unsigned long long)samples,
+                      cps,
+                      pct_bpf,
+                      pct_mix,
+                      pct_lpf_i,
+                      pct_lpf_q,
+                      pct_demod,
+                      pct_slicer);
+    }
+#endif
 
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(13, g_packets, "Unexpected packet count");
     TEST_ASSERT_TRUE_MESSAGE(cpu_pct < 50.0, "CPU usage exceeds 50%");
