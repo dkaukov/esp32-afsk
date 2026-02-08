@@ -37,7 +37,7 @@ Pipeline:
 #endif
 
 #ifndef AFSK_DECIM_OUT_SAMPLES
-#define AFSK_DECIM_OUT_SAMPLES 128
+#define AFSK_DECIM_OUT_SAMPLES 16
 #endif
 
 
@@ -638,16 +638,27 @@ private:
             offset += take;
             if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
 
-            dsps_fir_f32(&bpf.fir, decim_in, decim_bpf, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_bpf[i];
-                decim_i[i] = s * osc.cos();
-                decim_q[i] = -s * osc.sin();
-                osc.next();
-            }
+            dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-            dsps_fird_f32(&i_decim.fir, decim_i, decim_i_out, out_len);
-            dsps_fird_f32(&q_decim.fir, decim_q, decim_q_out, out_len);
+            uint32_t phase = osc.phase;
+            const uint32_t step = osc.phase_step;
+            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+                float s = decim_in[i];
+                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+                decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
+                phase += step;
+            }
+            dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
+            phase = osc.phase;
+            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+                float s = decim_in[i];
+                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+                decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
+                phase += step;
+            }
+            dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
+            osc.phase = phase;
+            osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
             for (int i = 0; i < out_len; i++) {
                 processIQ(decim_i_out[i], decim_q_out[i]);
             }
@@ -669,16 +680,27 @@ private:
             offset += take;
             if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
 
-            dsps_fir_f32(&bpf.fir, decim_in, decim_bpf, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_bpf[i];
-                decim_i[i] = s * osc.cos();
-                decim_q[i] = -s * osc.sin();
-                osc.next();
-            }
+            dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-            dsps_fird_f32(&i_decim.fir, decim_i, decim_i_out, out_len);
-            dsps_fird_f32(&q_decim.fir, decim_q, decim_q_out, out_len);
+            uint32_t phase = osc.phase;
+            const uint32_t step = osc.phase_step;
+            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+                float s = decim_in[i];
+                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+                decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
+                phase += step;
+            }
+            dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
+            phase = osc.phase;
+            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+                float s = decim_in[i];
+                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+                decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
+                phase += step;
+            }
+            dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
+            osc.phase = phase;
+            osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
             for (int i = 0; i < out_len; i++) {
                 processIQ(decim_i_out[i], decim_q_out[i]);
             }
@@ -692,16 +714,27 @@ private:
             decim_in[decim_fill++] = 0.0f;
         }
 
-        dsps_fir_f32(&bpf.fir, decim_in, decim_bpf, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
-        for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-            float s = decim_bpf[i];
-            decim_i[i] = s * osc.cos();
-            decim_q[i] = -s * osc.sin();
-            osc.next();
-        }
+        dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
         int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-        dsps_fird_f32(&i_decim.fir, decim_i, decim_i_out, out_len);
-        dsps_fird_f32(&q_decim.fir, decim_q, decim_q_out, out_len);
+        uint32_t phase = osc.phase;
+        const uint32_t step = osc.phase_step;
+        for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+            float s = decim_in[i];
+            int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+            decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
+            phase += step;
+        }
+        dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
+        phase = osc.phase;
+        for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
+            float s = decim_in[i];
+            int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+            decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
+            phase += step;
+        }
+        dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
+        osc.phase = phase;
+        osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
         for (int i = 0; i < out_len; i++) {
             processIQ(decim_i_out[i], decim_q_out[i]);
         }
@@ -732,11 +765,9 @@ private:
     float prev_q;
     size_t decim_fill;
     float decim_in[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
-    float decim_bpf[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
-    float decim_i[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
-    float decim_q[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
-    float decim_i_out[AFSK_DECIM_OUT_SAMPLES] AFSK_ALIGN16;
-    float decim_q_out[AFSK_DECIM_OUT_SAMPLES] AFSK_ALIGN16;
+    float decim_mix[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
+    float decim_i_out[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
+    float decim_q_out[afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX] AFSK_ALIGN16;
 
     afsk::detail::AfskSlicerPll slicer;
     int nrzi_last;

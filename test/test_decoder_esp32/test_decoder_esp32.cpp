@@ -7,20 +7,20 @@
 #include "embedded_audio.h"
 
 static void on_packet_decoded(const uint8_t *, size_t, int);
-static AfskDemodulator g_demod((float)AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, on_packet_decoded);
 static volatile uint32_t g_packets = 0;
 
 static void on_packet_decoded(const uint8_t *, size_t, int) {
     g_packets++;
 }
 
-static void test_decoder_embedded(void) {
+static void run_embedded_decoder(int decim) {
+    AfskDemodulator demod((float)AFSK_SAMPLE_RATE, decim, 0, on_packet_decoded);
     TEST_MESSAGE("Starting embedded decoder benchmark...");
     g_packets = 0;
 
     int64_t start = esp_timer_get_time();
-    g_demod.processSamples(EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
-    g_demod.flush();
+    demod.processSamples(EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
+    demod.flush();
     int64_t end = esp_timer_get_time();
     TEST_MESSAGE("DONE");
 
@@ -35,11 +35,13 @@ static void test_decoder_embedded(void) {
              "\n\nRESULTS\n"
              "metric        value\n"
              "---------------------------\n"
+             "decim         %d\n"
              "packets       %lu\n"
              "decode_sec    %.3f\n"
              "audio_sec     %.3f\n"
              "rt_factor     %.3f\n"
              "cpu_pct       %.2f\n",
+             decim,
              (unsigned long)g_packets,
              decode_sec,
              audio_sec,
@@ -48,14 +50,48 @@ static void test_decoder_embedded(void) {
     //TEST_MESSAGE(msg);
     Serial.println(msg);
 
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(13, g_packets, "Unexpected packet count");
-    TEST_ASSERT_TRUE_MESSAGE(cpu_pct < 50.0, "CPU usage exceeds 50%");
+    uint32_t expected_packets = 13;
+    float max_cpu_pct = 50.0f;
+    switch (decim) {
+        case 1:
+            expected_packets = 13;
+            max_cpu_pct = 20.69f;
+            break;
+        case 2:
+            expected_packets = 13;
+            max_cpu_pct = 13.37f;
+            break;
+        case 3:
+            expected_packets = 12;
+            max_cpu_pct = 11.63f;
+            break;
+        case 4:
+            expected_packets = 13;
+            max_cpu_pct = 10.85f;
+            break;
+        default:
+            expected_packets = 13;
+            max_cpu_pct = 50.0f;
+            break;
+    }
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(expected_packets, g_packets, "Unexpected packet count");
+    char cpu_msg[128];
+    snprintf(cpu_msg, sizeof(cpu_msg), "CPU usage %.2f exceeds limit %.2f (decim=%d)", cpu_pct, max_cpu_pct, decim);
+    TEST_ASSERT_TRUE_MESSAGE(cpu_pct <= max_cpu_pct, cpu_msg);
 }
+
+static void test_decoder_embedded_decim1(void) { run_embedded_decoder(1); }
+static void test_decoder_embedded_decim2(void) { run_embedded_decoder(2); }
+static void test_decoder_embedded_decim3(void) { run_embedded_decoder(3); }
+static void test_decoder_embedded_decim4(void) { run_embedded_decoder(4); }
 
 void setup() {
     Serial.begin(921600);
     UNITY_BEGIN();
-    RUN_TEST(test_decoder_embedded);
+    RUN_TEST(test_decoder_embedded_decim1);
+    RUN_TEST(test_decoder_embedded_decim2);
+    RUN_TEST(test_decoder_embedded_decim3);
+    RUN_TEST(test_decoder_embedded_decim4);
     UNITY_END();
 }
 

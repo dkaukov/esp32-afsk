@@ -42,7 +42,7 @@ static void on_packet_decoded(const uint8_t *, size_t, int) {
     g_packet_count++;
 }
 
-static uint32_t decode_flac_and_count_packets(const char *path) {
+static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
     drflac *flac = drflac_open_file(path, NULL);
     TEST_ASSERT_NOT_NULL_MESSAGE(flac, "Failed to open FLAC fixture.");
 
@@ -52,7 +52,7 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
     const uint32_t target_rate = 48000;
     TEST_ASSERT_MESSAGE(sample_rate > 0, "Invalid FLAC sample rate.");
 
-    AfskDemodulator demod((float)target_rate, AFSK_DECIM_FACTOR, 0, on_packet_decoded);
+    AfskDemodulator demod((float)target_rate, decim, 0, on_packet_decoded);
     g_packet_count = 0;
 
     LinearResampler rs;
@@ -117,26 +117,55 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
 void setUp() {}
 void tearDown() {}
 
-void test_decoder_fixtures_min_packets(void) {
-    // TODO: Update min packet counts once fixtures are in place.
-    const TestCase cases[] = {
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39.flac", 1002},
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39_20s.flac", 13},
-        {"test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac", 51},
-        {"test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac", 942},
-    };
-
-    for (const auto &tc : cases) {
-        const uint32_t count = decode_flac_and_count_packets(tc.path);
-        printf("Decoded %u packets from %s\n", (unsigned)count, tc.path);
-        char msg[128];
-        snprintf(msg, sizeof(msg), "%s: decoded %u packets", tc.path, (unsigned)count);
-        TEST_ASSERT_TRUE_MESSAGE(count >= tc.min_packets, msg);
-    }
+static void assertDecoded(uint32_t count, uint32_t min_packets, const char *path, int decim) {
+    printf("Decoded %u packets from %s (decim=%d)\n", (unsigned)count, path, decim);
+    char msg[160];
+    snprintf(msg, sizeof(msg), "%s: decoded %u packets (decim=%d)", path, (unsigned)count, decim);
+    TEST_ASSERT_TRUE_MESSAGE(count >= min_packets, msg);
 }
+
+static const char kFixtureTrack1[] = "test/fixtures/01_40-Mins-Traffic-on-144.39.flac";
+static const char kFixtureTrack2[] = "test/fixtures/01_40-Mins-Traffic-on-144.39_20s.flac";
+static const char kFixtureTrack3[] = "test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac";
+static const char kFixtureTrack4[] = "test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac";
+
+void test_decoder_decim1_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 1), 1005, kFixtureTrack1, 1); }
+void test_decoder_decim1_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 1), 13, kFixtureTrack2, 1); }
+void test_decoder_decim1_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 1), 51, kFixtureTrack3, 1); }
+void test_decoder_decim1_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 1), 947, kFixtureTrack4, 1); }
+
+void test_decoder_decim2_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 2), 1005, kFixtureTrack1, 2); }
+void test_decoder_decim2_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 2), 13, kFixtureTrack2, 2); }
+void test_decoder_decim2_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 2), 52, kFixtureTrack3, 2); }
+void test_decoder_decim2_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 2), 945, kFixtureTrack4, 2); }
+
+void test_decoder_decim3_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 3), 988, kFixtureTrack1, 3); }
+void test_decoder_decim3_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 3), 12, kFixtureTrack2, 3); }
+void test_decoder_decim3_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 3), 50, kFixtureTrack3, 3); }
+void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 3), 935, kFixtureTrack4, 3); }
+
+void test_decoder_decim4_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 4), 1003, kFixtureTrack1, 4); }
+void test_decoder_decim4_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 4), 13, kFixtureTrack2, 4); }
+void test_decoder_decim4_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 4), 52, kFixtureTrack3, 4); }
+void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 4), 945, kFixtureTrack4, 4); }
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
-    RUN_TEST(test_decoder_fixtures_min_packets);
+    RUN_TEST(test_decoder_decim1_track1);
+    RUN_TEST(test_decoder_decim1_track2);
+    RUN_TEST(test_decoder_decim1_track3);
+    RUN_TEST(test_decoder_decim1_track4);
+    RUN_TEST(test_decoder_decim2_track1);
+    RUN_TEST(test_decoder_decim2_track2);
+    RUN_TEST(test_decoder_decim2_track3);
+    RUN_TEST(test_decoder_decim2_track4);
+    RUN_TEST(test_decoder_decim3_track1);
+    RUN_TEST(test_decoder_decim3_track2);
+    RUN_TEST(test_decoder_decim3_track3);
+    RUN_TEST(test_decoder_decim3_track4);
+    RUN_TEST(test_decoder_decim4_track1);
+    RUN_TEST(test_decoder_decim4_track2);
+    RUN_TEST(test_decoder_decim4_track3);
+    RUN_TEST(test_decoder_decim4_track4);
     return UNITY_END();
 }
