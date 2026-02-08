@@ -36,7 +36,7 @@
 #include <Arduino.h>
 #include "test/stubs/test_globals.h"
 #include "afsk_encoder.h"
-#include "afsk_demod.h"
+#include "AfskDemodulator.h"
 
 // ============================================================================
 // Constants
@@ -51,7 +51,8 @@
 // Global State
 // ============================================================================
 
-static AfskDemodulator demod;
+static void onPacketDecoded(const uint8_t *frame, size_t len, int);
+static AfskDemodulator demod((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
 static uint32_t totalPacketsDecoded = 0;
 static uint32_t sessionPacketCount = 0;
 
@@ -146,7 +147,7 @@ static void cmdDecode(const char *arg) {
     }
 
     // Reset decoder state
-    afsk_demod_init(&demod, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
@@ -182,7 +183,7 @@ static void cmdDecode(const char *arg) {
         int16_t *samples = (int16_t *)chunkBuf;
         for (int i = 0; i < samplesToRead; i++) {
             float sample = (float)samples[i] / 32768.0f;
-            afsk_demod_process_sample(&demod, sample);
+            demod.processSample(sample);
         }
 
         samplesRemaining -= samplesToRead;
@@ -288,7 +289,7 @@ static void cmdLoopback() {
     };
     const size_t frameLen = sizeof(testFrame);
 
-    // Compute CRC-CCITT (per AX.25 spec, same as afsk_demod.h)
+    // Compute CRC-CCITT (per AX.25 spec, same as AfskDemodulator.h)
     // CRC is computed over all bytes after the flag and before the CRC field
     uint16_t crc = 0xFFFF;
     for (size_t i = 0; i < frameLen; i++) {
@@ -338,14 +339,14 @@ static void cmdLoopback() {
     }
 
     // Feed encoded audio into decoder
-    afsk_demod_init(&demod, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
 
     for (size_t i = 0; i < numSamples; i++) {
         float sample = (float)audioBuf[i] / 32768.0f;
-        afsk_demod_process_sample(&demod, sample);
+        demod.processSample(sample);
     }
 
     free(audioBuf);
@@ -471,7 +472,7 @@ void setup() {
     initEncoderSineTable();
 
     // Initialize demodulator
-    afsk_demod_init(&demod, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
 }
 
 void loop() {

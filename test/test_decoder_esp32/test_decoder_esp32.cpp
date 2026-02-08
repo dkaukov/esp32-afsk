@@ -3,10 +3,11 @@
 
 #include "unity.h"
 
-#include "afsk_demod.h"
+#include "AfskDemodulator.h"
 #include "embedded_audio.h"
 
-static AfskDemodulator g_demod;
+static void on_packet_decoded(const uint8_t *, size_t, int);
+static AfskDemodulator g_demod((float)AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, on_packet_decoded);
 static volatile uint32_t g_packets = 0;
 
 static void on_packet_decoded(const uint8_t *, size_t, int) {
@@ -16,11 +17,10 @@ static void on_packet_decoded(const uint8_t *, size_t, int) {
 static void test_decoder_embedded(void) {
     TEST_MESSAGE("Starting embedded decoder benchmark...");
     g_packets = 0;
-    afsk_demod_init(&g_demod, 0, on_packet_decoded);
 
     int64_t start = esp_timer_get_time();
-    afsk_demod_process_samples_i16(&g_demod, EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
-    afsk_demod_flush(&g_demod);
+    g_demod.processSamples(EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
+    g_demod.flush();
     int64_t end = esp_timer_get_time();
     TEST_MESSAGE("DONE");
 

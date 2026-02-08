@@ -11,7 +11,7 @@
 #error "Missing test/third_party/dr_flac.h. See test/third_party/README.md."
 #endif
 
-#include "afsk_demod.h"
+#include "AfskDemodulator.h"
 
 namespace {
 
@@ -52,9 +52,8 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
     const uint32_t target_rate = 48000;
     TEST_ASSERT_MESSAGE(sample_rate > 0, "Invalid FLAC sample rate.");
 
-    AfskDemodulator demod;
+    AfskDemodulator demod((float)target_rate, AFSK_DECIM_FACTOR, 0, on_packet_decoded);
     g_packet_count = 0;
-    afsk_demod_init(&demod, 0, on_packet_decoded);
 
     LinearResampler rs;
     resampler_init(&rs, sample_rate, target_rate);
@@ -87,7 +86,7 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
             while (rs.pos <= (double)rs.in_index) {
                 const double t = rs.pos - (double)(rs.in_index - 1);
                 const float out = rs.prev + (sample - rs.prev) * (float)t;
-                afsk_demod_process_samples_f32(&demod, &out, 1);
+                demod.processSamples(&out, 1);
                 rs.pos += rs.step;
             }
 
@@ -97,15 +96,16 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
     }
 
 #ifdef AFSK_DEMOD_STATS
-    if (demod.stats.samples > 0) {
-        const float mean = demod.stats.demod_sum / (float)demod.stats.samples;
+    const AfskDemodStats &stats = demod.getStats();
+    if (stats.samples > 0) {
+        const float mean = stats.demod_sum / (float)stats.samples;
         printf("Demod stats for %s: min=%.6f max=%.6f mean=%.6f samples=%llu\n",
-               path, demod.stats.demod_min, demod.stats.demod_max, mean,
-               (unsigned long long)demod.stats.samples);
+               path, stats.demod_min, stats.demod_max, mean,
+               (unsigned long long)stats.samples);
     }
 #endif
 
-    afsk_demod_flush(&demod);
+    demod.flush();
     free(buffer);
     drflac_close(flac);
 
