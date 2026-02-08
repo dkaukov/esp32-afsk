@@ -20,15 +20,9 @@ Pipeline:
 #include <stdbool.h>
 #include <string.h>
 
-#if defined(ESP32)
+#define AFSK_ALIGN16 __attribute__((aligned(16)))
 #include <esp_dsp.h>
 #include <dsps_fir.h>
-#define AFSK_USE_ESP_DSP 1
-#define AFSK_ALIGN16 __attribute__((aligned(16)))
-#else
-#define AFSK_USE_ESP_DSP 0
-#define AFSK_ALIGN16
-#endif
 
 #ifndef PROGMEM
 #define PROGMEM
@@ -155,7 +149,6 @@ static void afsk_design_bandpass_kaiser(float *out, int num_taps, float low_hz, 
 // FIR - float
 // ============================================================================
 
-#if AFSK_USE_ESP_DSP
 typedef struct {
     fir_f32_t fir;
     float *coeffs;
@@ -181,38 +174,6 @@ static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
     dsps_fir_f32(&f->fir, &x, &y, 1);
     return y;
 }
-#else
-typedef struct {
-    float *taps;
-    float *state;
-    int len;
-    int idx;
-} AfskFastFIR;
-
-static void afsk_fir_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len) {
-    f->len = len;
-    f->idx = 0;
-    f->taps = taps_store;
-    f->state = state_store;
-    for (int i = 0; i < len; i++) f->taps[i] = taps[i];
-    if (state_len > 0) {
-        memset(f->state, 0, sizeof(float) * (size_t)state_len);
-    }
-}
-
-static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
-    f->state[f->idx] = x;
-    float acc = 0.0f;
-    int s = f->idx;
-    for (int i = 0; i < f->len; i++) {
-        acc += f->taps[i] * f->state[s];
-        s = (s == 0) ? (f->len - 1) : (s - 1);
-    }
-    f->idx++;
-    if (f->idx >= f->len) f->idx = 0;
-    return acc;
-}
-#endif
 
 // ============================================================================
 // IIR LPF (single pole) - float
