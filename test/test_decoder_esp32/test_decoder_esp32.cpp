@@ -19,10 +19,8 @@ static void test_decoder_embedded(void) {
     afsk_demod_init(&g_demod, 0, on_packet_decoded);
 
     int64_t start = esp_timer_get_time();
-    for (uint32_t i = 0; i < EMBEDDED_AUDIO_SAMPLES; i++) {
-        float s = (float)EMBEDDED_AUDIO[i] / 32768.0f;
-        afsk_demod_process_sample(&g_demod, s);
-    }
+    afsk_demod_process_samples_i16(&g_demod, EMBEDDED_AUDIO, EMBEDDED_AUDIO_SAMPLES);
+    afsk_demod_flush(&g_demod);
     int64_t end = esp_timer_get_time();
     TEST_MESSAGE("DONE");
 

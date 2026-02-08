@@ -87,7 +87,7 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
             while (rs.pos <= (double)rs.in_index) {
                 const double t = rs.pos - (double)(rs.in_index - 1);
                 const float out = rs.prev + (sample - rs.prev) * (float)t;
-                afsk_demod_process_sample(&demod, out);
+                afsk_demod_process_samples_f32(&demod, &out, 1);
                 rs.pos += rs.step;
             }
 
@@ -105,6 +105,7 @@ static uint32_t decode_flac_and_count_packets(const char *path) {
     }
 #endif
 
+    afsk_demod_flush(&demod);
     free(buffer);
     drflac_close(flac);
 

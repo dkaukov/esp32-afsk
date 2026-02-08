@@ -32,6 +32,16 @@ Pipeline:
 #define AFSK_SAMPLE_RATE 48000
 #endif
 
+#ifndef AFSK_DECIM_FACTOR
+#define AFSK_DECIM_FACTOR 2
+#endif
+
+#ifndef AFSK_DECIM_OUT_SAMPLES
+#define AFSK_DECIM_OUT_SAMPLES 128
+#endif
+
+#define AFSK_DECIM_IN_SAMPLES (AFSK_DECIM_OUT_SAMPLES * AFSK_DECIM_FACTOR)
+
 #define AFSK_BAUD_RATE  1200.0f
 #define AFSK_MARK_FREQ  1200.0f
 #define AFSK_SPACE_FREQ 2200.0f
@@ -175,6 +185,19 @@ static inline float afsk_fir_filter(AfskFastFIR *f, float x) {
     return y;
 }
 
+static void afsk_fird_init(AfskFastFIR *f, const float *taps, int len, float *taps_store, float *state_store, int state_len, int decim) {
+    if (state_len < len + 4 || decim < 1) {
+        f->len = 0;
+        return;
+    }
+    f->len = len;
+    f->coeffs = taps_store;
+    f->delay = state_store;
+    for (int i = 0; i < len; i++) f->coeffs[i] = taps[i];
+    memset(f->delay, 0, sizeof(float) * (size_t)state_len);
+    dsps_fird_init_f32(&f->fir, f->coeffs, f->delay, f->len, decim);
+}
+
 // ============================================================================
 // IIR LPF (single pole) - float
 // ============================================================================
@@ -286,11 +309,12 @@ static inline int afsk_make_odd(int v) {
 static void afsk_slicer_init(AfskSlicerPll *pll, float sample_rate, float baud_rate) {
     float nominal = baud_rate / sample_rate;
     float ppm = 5100.0f * 1e-6f;
+    float rate_scale = 48000.0f / sample_rate;
     pll->nominal_step = nominal;
     pll->step_min = nominal * (1.0f - ppm);
     pll->step_max = nominal * (1.0f + ppm);
-    pll->kp = 1.0e-4f;
-    pll->ki = 8.0e-6f;
+    pll->kp = 1.0e-4f * rate_scale;
+    pll->ki = 8.0e-6f * rate_scale;
     pll->phase_gain_acq = 0.218f;
     pll->lock_error_window = 0.30f;
     pll->unlock_error_window = fminf(0.49f, pll->lock_error_window * 1.5f);
@@ -375,20 +399,33 @@ static inline uint16_t afsk_crc_calc(const uint8_t *data, size_t len) {
 typedef struct {
     int emphasis;
     AfskPacketCallback callback;
+    int decim;
+    float demod_sample_rate;
 
     AfskDdsOsc osc;
     AfskFastFIR bpf;
     AfskFastFIR i_filt;
     AfskFastFIR q_filt;
+    AfskFastFIR i_decim;
+    AfskFastFIR q_decim;
     float bpf_taps[AFSK_MAX_BPF_TAPS] AFSK_ALIGN16;
     float bpf_state[AFSK_MAX_BPF_TAPS + 4] AFSK_ALIGN16;
     float lpf_taps[AFSK_MAX_LPF_TAPS] AFSK_ALIGN16;
     float i_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
     float q_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
+    float i_decim_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
+    float q_decim_state[AFSK_MAX_LPF_TAPS + 4] AFSK_ALIGN16;
     AfskIIR1 out_lp;
     float norm_gain;
     float prev_i;
     float prev_q;
+    size_t decim_fill;
+    float decim_in[AFSK_DECIM_IN_SAMPLES] AFSK_ALIGN16;
+    float decim_bpf[AFSK_DECIM_IN_SAMPLES] AFSK_ALIGN16;
+    float decim_i[AFSK_DECIM_IN_SAMPLES] AFSK_ALIGN16;
+    float decim_q[AFSK_DECIM_IN_SAMPLES] AFSK_ALIGN16;
+    float decim_i_out[AFSK_DECIM_OUT_SAMPLES] AFSK_ALIGN16;
+    float decim_q_out[AFSK_DECIM_OUT_SAMPLES] AFSK_ALIGN16;
 
     AfskSlicerPll slicer;
     int nrzi_last;
@@ -408,34 +445,38 @@ static void afsk_demod_init(AfskDemodulator *d, int emphasis, AfskPacketCallback
     memset(d, 0, sizeof(AfskDemodulator));
     d->emphasis = emphasis;
     d->callback = callback;
+    d->decim = AFSK_DECIM_FACTOR;
     float sample_rate = (float)AFSK_SAMPLE_RATE;
+    d->demod_sample_rate = sample_rate / (float)d->decim;
     float baud = AFSK_BAUD_RATE;
     float center = (AFSK_MARK_FREQ + AFSK_SPACE_FREQ) * 0.5f;
     float dev = 0.5f * (AFSK_SPACE_FREQ - AFSK_MARK_FREQ);
 
     afsk_dds_init(&d->osc, sample_rate, center);
 
-    const float bpf_scale = 0.95f;
+    const float bpf_scale = 1.00f;
     int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * bpf_scale);
     bpf_len = afsk_make_odd(bpf_len);
     bpf_len = afsk_clamp_int(bpf_len, 9, AFSK_MAX_BPF_TAPS | 1);
     afsk_design_bandpass_kaiser(d->bpf_taps, bpf_len, AFSK_MARK_FREQ, AFSK_SPACE_FREQ, sample_rate, 30.0f);
     afsk_fir_init(&d->bpf, d->bpf_taps, bpf_len, d->bpf_taps, d->bpf_state, AFSK_MAX_BPF_TAPS + 4);
 
-    const float lpf_scale = 0.95f;
+    const float lpf_scale = 1.00f;
     int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
     lpf_len = afsk_make_odd(lpf_len);
     lpf_len = afsk_clamp_int(lpf_len, 7, AFSK_MAX_LPF_TAPS | 1);
     afsk_design_lowpass_hamming(d->lpf_taps, lpf_len, dev, sample_rate);
     afsk_fir_init(&d->i_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->i_state, AFSK_MAX_LPF_TAPS + 4);
     afsk_fir_init(&d->q_filt, d->lpf_taps, lpf_len, d->lpf_taps, d->q_state, AFSK_MAX_LPF_TAPS + 4);
+    afsk_fird_init(&d->i_decim, d->lpf_taps, lpf_len, d->lpf_taps, d->i_decim_state, AFSK_MAX_LPF_TAPS + 4, d->decim);
+    afsk_fird_init(&d->q_decim, d->lpf_taps, lpf_len, d->lpf_taps, d->q_decim_state, AFSK_MAX_LPF_TAPS + 4, d->decim);
 
-    d->norm_gain = 1.0f / (2.0f * (float)M_PI * (dev / sample_rate));
-    afsk_iir_init(&d->out_lp, sample_rate, baud * 3.0f);
+    d->norm_gain = 1.0f / (2.0f * (float)M_PI * (dev / d->demod_sample_rate));
+    afsk_iir_init(&d->out_lp, d->demod_sample_rate, baud * 3.0f);
     d->prev_i = 0.0f;
     d->prev_q = 0.0f;
 
-    afsk_slicer_init(&d->slicer, sample_rate, baud);
+    afsk_slicer_init(&d->slicer, d->demod_sample_rate, baud);
     d->nrzi_last = 0;
     afsk_hdlc_reset(&d->hdlc);
 
@@ -531,12 +572,10 @@ static void afsk_slicer_process(AfskDemodulator *d, float sample) {
     pll->prev_symbol = symbol;
 }
 
-static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
-    float s = afsk_fir_filter(&d->bpf, sample);
-    float mixed_i = s * afsk_dds_cos(&d->osc);
-    float mixed_q = -s * afsk_dds_sin(&d->osc);
-    float fi = afsk_fir_filter(&d->i_filt, mixed_i);
-    float fq = afsk_fir_filter(&d->q_filt, mixed_q);
+static inline void afsk_demod_process_samples_i16_decim(AfskDemodulator *d, const int16_t *samples, size_t count);
+static inline void afsk_demod_process_samples_f32_decim(AfskDemodulator *d, const float *samples, size_t count);
+
+static inline void afsk_demod_process_iq(AfskDemodulator *d, float fi, float fq) {
     float delta_q = (fq * d->prev_i) - (fi * d->prev_q);
     float mag_sq = (fi * fi) + (fq * fq);
     float demod = 0.0f;
@@ -555,14 +594,122 @@ static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
     }
     d->prev_i = fi;
     d->prev_q = fq;
-    afsk_dds_next(&d->osc);
     afsk_slicer_process(d, demod);
+}
+
+static void afsk_demod_process_sample(AfskDemodulator *d, float sample) {
+    float s = afsk_fir_filter(&d->bpf, sample);
+    float mixed_i = s * afsk_dds_cos(&d->osc);
+    float mixed_q = -s * afsk_dds_sin(&d->osc);
+    float fi = afsk_fir_filter(&d->i_filt, mixed_i);
+    float fq = afsk_fir_filter(&d->q_filt, mixed_q);
+    afsk_dds_next(&d->osc);
+    afsk_demod_process_iq(d, fi, fq);
 }
 
 static inline void afsk_demod_process_samples_i16(AfskDemodulator *d, const int16_t *samples, size_t count) {
     if (!samples || count == 0) return;
+    if (d->decim > 1) {
+        afsk_demod_process_samples_i16_decim(d, samples, count);
+        return;
+    }
     for (size_t i = 0; i < count; i++) {
         float s = (float)samples[i] / 32768.0f;
         afsk_demod_process_sample(d, s);
     }
+}
+
+static inline void afsk_demod_process_samples_i16_decim(AfskDemodulator *d, const int16_t *samples, size_t count) {
+    if (!samples || count == 0) return;
+    size_t offset = 0;
+    while (offset < count) {
+        size_t need = AFSK_DECIM_IN_SAMPLES - d->decim_fill;
+        size_t take = count - offset;
+        if (take > need) take = need;
+        for (size_t i = 0; i < take; i++) {
+            d->decim_in[d->decim_fill + i] = (float)samples[offset + i] / 32768.0f;
+        }
+        d->decim_fill += take;
+        offset += take;
+        if (d->decim_fill < AFSK_DECIM_IN_SAMPLES) continue;
+
+        dsps_fir_f32(&d->bpf.fir, d->decim_in, d->decim_bpf, (int)AFSK_DECIM_IN_SAMPLES);
+        for (size_t i = 0; i < AFSK_DECIM_IN_SAMPLES; i++) {
+            float s = d->decim_bpf[i];
+            d->decim_i[i] = s * afsk_dds_cos(&d->osc);
+            d->decim_q[i] = -s * afsk_dds_sin(&d->osc);
+            afsk_dds_next(&d->osc);
+        }
+        int out_len = (int)(AFSK_DECIM_IN_SAMPLES / d->decim);
+        dsps_fird_f32(&d->i_decim.fir, d->decim_i, d->decim_i_out, out_len);
+        dsps_fird_f32(&d->q_decim.fir, d->decim_q, d->decim_q_out, out_len);
+        for (int i = 0; i < out_len; i++) {
+            afsk_demod_process_iq(d, d->decim_i_out[i], d->decim_q_out[i]);
+        }
+        d->decim_fill = 0;
+    }
+}
+
+static inline void afsk_demod_process_samples_f32_decim(AfskDemodulator *d, const float *samples, size_t count) {
+    if (!samples || count == 0) return;
+    size_t offset = 0;
+    while (offset < count) {
+        size_t need = AFSK_DECIM_IN_SAMPLES - d->decim_fill;
+        size_t take = count - offset;
+        if (take > need) take = need;
+        for (size_t i = 0; i < take; i++) {
+            d->decim_in[d->decim_fill + i] = samples[offset + i];
+        }
+        d->decim_fill += take;
+        offset += take;
+        if (d->decim_fill < AFSK_DECIM_IN_SAMPLES) continue;
+
+        dsps_fir_f32(&d->bpf.fir, d->decim_in, d->decim_bpf, (int)AFSK_DECIM_IN_SAMPLES);
+        for (size_t i = 0; i < AFSK_DECIM_IN_SAMPLES; i++) {
+            float s = d->decim_bpf[i];
+            d->decim_i[i] = s * afsk_dds_cos(&d->osc);
+            d->decim_q[i] = -s * afsk_dds_sin(&d->osc);
+            afsk_dds_next(&d->osc);
+        }
+        int out_len = (int)(AFSK_DECIM_IN_SAMPLES / d->decim);
+        dsps_fird_f32(&d->i_decim.fir, d->decim_i, d->decim_i_out, out_len);
+        dsps_fird_f32(&d->q_decim.fir, d->decim_q, d->decim_q_out, out_len);
+        for (int i = 0; i < out_len; i++) {
+            afsk_demod_process_iq(d, d->decim_i_out[i], d->decim_q_out[i]);
+        }
+        d->decim_fill = 0;
+    }
+}
+
+static inline void afsk_demod_process_samples_f32(AfskDemodulator *d, const float *samples, size_t count) {
+    if (!samples || count == 0) return;
+    if (d->decim > 1) {
+        afsk_demod_process_samples_f32_decim(d, samples, count);
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        afsk_demod_process_sample(d, samples[i]);
+    }
+}
+
+static inline void afsk_demod_flush(AfskDemodulator *d) {
+    if (d->decim_fill == 0) return;
+    while (d->decim_fill < AFSK_DECIM_IN_SAMPLES) {
+        d->decim_in[d->decim_fill++] = 0.0f;
+    }
+
+    dsps_fir_f32(&d->bpf.fir, d->decim_in, d->decim_bpf, (int)AFSK_DECIM_IN_SAMPLES);
+    for (size_t i = 0; i < AFSK_DECIM_IN_SAMPLES; i++) {
+        float s = d->decim_bpf[i];
+        d->decim_i[i] = s * afsk_dds_cos(&d->osc);
+        d->decim_q[i] = -s * afsk_dds_sin(&d->osc);
+        afsk_dds_next(&d->osc);
+    }
+    int out_len = (int)(AFSK_DECIM_IN_SAMPLES / d->decim);
+    dsps_fird_f32(&d->i_decim.fir, d->decim_i, d->decim_i_out, out_len);
+    dsps_fird_f32(&d->q_decim.fir, d->decim_q, d->decim_q_out, out_len);
+    for (int i = 0; i < out_len; i++) {
+        afsk_demod_process_iq(d, d->decim_i_out[i], d->decim_q_out[i]);
+    }
+    d->decim_fill = 0;
 }
