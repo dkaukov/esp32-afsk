@@ -62,8 +62,8 @@ static void run_embedded_decoder(int decim) {
             max_cpu_pct = 13.37f;
             break;
         case 3:
-            expected_packets = 12;
-            max_cpu_pct = 11.63f;
+            expected_packets = 13;
+            max_cpu_pct = 11.68f;
             break;
         case 4:
             expected_packets = 13;

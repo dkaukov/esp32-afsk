@@ -37,7 +37,7 @@ Pipeline:
 #endif
 
 #ifndef AFSK_DECIM_OUT_SAMPLES
-#define AFSK_DECIM_OUT_SAMPLES 16
+#define AFSK_DECIM_OUT_SAMPLES 24
 #endif
 
 

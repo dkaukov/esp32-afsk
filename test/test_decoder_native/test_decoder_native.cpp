@@ -37,6 +37,9 @@ static void resampler_init(LinearResampler *rs, uint32_t in_rate, uint32_t out_r
 }
 
 static uint32_t g_packet_count = 0;
+#ifdef AFSK_DEMOD_STATS
+static AfskDemodStats g_last_stats;
+#endif
 
 static void on_packet_decoded(const uint8_t *, size_t, int) {
     g_packet_count++;
@@ -96,13 +99,7 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
     }
 
 #ifdef AFSK_DEMOD_STATS
-    const AfskDemodStats &stats = demod.getStats();
-    if (stats.samples > 0) {
-        const float mean = stats.demod_sum / (float)stats.samples;
-        printf("Demod stats for %s: min=%.6f max=%.6f mean=%.6f samples=%llu\n",
-               path, stats.demod_min, stats.demod_max, mean,
-               (unsigned long long)stats.samples);
-    }
+    g_last_stats = demod.getStats();
 #endif
 
     demod.flush();
@@ -117,8 +114,45 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
 void setUp() {}
 void tearDown() {}
 
+static const char *basename(const char *path) {
+    const char *last = path;
+    for (const char *p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    return last;
+}
+
+static void print_results_header_once(void) {
+    static bool printed = false;
+    if (printed) return;
+    printed = true;
+    printf("\nRESULTS (native)\n");
+    printf("%-40s %5s %8s %10s %10s %10s %12s %10s\n",
+           "fixture", "decim", "packets", "min_req", "min", "max", "mean", "samples");
+    printf("%-40s %5s %8s %10s %10s %10s %12s %10s\n",
+           "----------------------------------------", "-----", "--------", "----------", "----------", "----------", "------------", "----------");
+}
+
 static void assertDecoded(uint32_t count, uint32_t min_packets, const char *path, int decim) {
-    printf("Decoded %u packets from %s (decim=%d)\n", (unsigned)count, path, decim);
+    print_results_header_once();
+#ifdef AFSK_DEMOD_STATS
+    const float mean = g_last_stats.samples ? (g_last_stats.demod_sum / (float)g_last_stats.samples) : 0.0f;
+    printf("%-40s %5d %8u %10u %10.3f %10.3f %12.6f %10llu\n",
+           basename(path),
+           decim,
+           (unsigned)count,
+           (unsigned)min_packets,
+           (double)g_last_stats.demod_min,
+           (double)g_last_stats.demod_max,
+           (double)mean,
+           (unsigned long long)g_last_stats.samples);
+#else
+    printf("%-40s %5d %8u %10u\n",
+           basename(path),
+           decim,
+           (unsigned)count,
+           (unsigned)min_packets);
+#endif
     char msg[160];
     snprintf(msg, sizeof(msg), "%s: decoded %u packets (decim=%d)", path, (unsigned)count, decim);
     TEST_ASSERT_TRUE_MESSAGE(count >= min_packets, msg);
@@ -139,10 +173,10 @@ void test_decoder_decim2_track2(void) { assertDecoded(decode_flac_and_count_pack
 void test_decoder_decim2_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 2), 52, kFixtureTrack3, 2); }
 void test_decoder_decim2_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 2), 945, kFixtureTrack4, 2); }
 
-void test_decoder_decim3_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 3), 988, kFixtureTrack1, 3); }
-void test_decoder_decim3_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 3), 12, kFixtureTrack2, 3); }
-void test_decoder_decim3_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 3), 50, kFixtureTrack3, 3); }
-void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 3), 935, kFixtureTrack4, 3); }
+void test_decoder_decim3_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 3), 1004, kFixtureTrack1, 3); }
+void test_decoder_decim3_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 3), 13, kFixtureTrack2, 3); }
+void test_decoder_decim3_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 3), 52, kFixtureTrack3, 3); }
+void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 3), 945, kFixtureTrack4, 3); }
 
 void test_decoder_decim4_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 4), 1003, kFixtureTrack1, 4); }
 void test_decoder_decim4_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 4), 13, kFixtureTrack2, 4); }
