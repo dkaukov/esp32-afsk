@@ -12,3 +12,6 @@ __pycache__/
 # Temporary
 *.tmp
 *.swp
+
+.vscode
+.doc
