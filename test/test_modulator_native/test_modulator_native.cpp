@@ -46,12 +46,12 @@ void test_modulator_native_loopback_basic(void) {
     };
 
     g_samples.reserve(48000);
-    AfskModulator mod((float)AFSK_SAMPLE_RATE, on_samples);
+    AfskModulator mod(AFSK_SAMPLE_RATE, on_samples);
     float chunk[256];
 
     mod.modulate(payload, sizeof(payload), chunk, sizeof(chunk) / sizeof(chunk[0]));
 
-    AfskDemodulator demod((float)AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, on_frame);
+    AfskDemodulator demod(AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, on_frame);
     demod.processSamples(g_samples.data(), g_samples.size());
     demod.flush();
 

@@ -82,11 +82,8 @@ private:
 
 class AfskModulator {
 public:
-    AfskModulator(float sample_rate = (float)AFSK_SAMPLE_RATE,
-                  AfskSampleCallback callback = nullptr,
-                  int preamble_flags = -1,
-                  int postamble_flags = 3)
-        : sample_rate(sample_rate),
+    AfskModulator(int sample_rate = AFSK_SAMPLE_RATE, AfskSampleCallback callback = nullptr, int preamble_flags = -1, int postamble_flags = 3)
+        : sample_rate((float)sample_rate),
           callback(callback),
           postamble_flags(postamble_flags) {
         if (preamble_flags < 0) {

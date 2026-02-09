@@ -377,11 +377,11 @@ typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len, int emphasi
 
 class AfskDemodulator {
 public:
-    AfskDemodulator(float sample_rate = (float)AFSK_SAMPLE_RATE,
+    AfskDemodulator(int sample_rate = AFSK_SAMPLE_RATE,
                     int decim = AFSK_DECIM_FACTOR,
                     int emphasis = 0,
                     AfskPacketCallback callback = nullptr) {
-        init(sample_rate, decim, emphasis, callback);
+        init((float)sample_rate, decim, emphasis, callback);
     }
 
     void processSamples(const int16_t *samples, size_t count) {

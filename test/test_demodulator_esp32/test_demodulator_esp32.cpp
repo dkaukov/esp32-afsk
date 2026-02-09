@@ -14,7 +14,7 @@ static void on_packet_decoded(const uint8_t *, size_t, int) {
 }
 
 static void run_embedded_decoder(int decim) {
-    AfskDemodulator demod((float)AFSK_SAMPLE_RATE, decim, 0, on_packet_decoded);
+    AfskDemodulator demod(AFSK_SAMPLE_RATE, decim, 0, on_packet_decoded);
     TEST_MESSAGE("Starting embedded decoder benchmark...");
     g_packets = 0;
 
