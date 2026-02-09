@@ -7,7 +7,7 @@ Protocol (optional host streaming):
 - ESP32 replies with: `DONE packets=<n> decode_us=<us> audio_sec=<sec> rt_factor=<x> cpu_pct=<pct>`.
 
 Run on ESP32:
-- `pio test -e esp32dev -f test_decoder_esp32`
+- `pio test -e esp32dev -f test_demodulator_esp32`
 
 Embedded clip:
 - Firmware currently runs the embedded 20s clip from `embedded_audio.h` and prints the same `DONE` line.

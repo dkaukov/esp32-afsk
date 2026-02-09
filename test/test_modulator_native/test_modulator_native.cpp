@@ -37,7 +37,7 @@ void setUp() {
 
 void tearDown() {}
 
-void test_modulator_loopback_basic(void) {
+void test_modulator_native_loopback_basic(void) {
     const uint8_t payload[] = {
         0x82, 0xa0, 0xa4, 0xa6, 0x40, 0x40, 0x60,  // DEST
         0x9a, 0x66, 0x66, 0x96, 0x40, 0x40, 0x61,  // SRC
@@ -62,6 +62,6 @@ void test_modulator_loopback_basic(void) {
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
-    RUN_TEST(test_modulator_loopback_basic);
+    RUN_TEST(test_modulator_native_loopback_basic);
     return UNITY_END();
 }
