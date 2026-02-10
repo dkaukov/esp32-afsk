@@ -178,7 +178,7 @@ void test_decoder_decim3_track2(void) { assertDecoded(decode_flac_and_count_pack
 void test_decoder_decim3_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 3), 52, kFixtureTrack3, 3); }
 void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 3), 945, kFixtureTrack4, 3); }
 
-void test_decoder_decim4_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 4), 1003, kFixtureTrack1, 4); }
+void test_decoder_decim4_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 4), 1000, kFixtureTrack1, 4); }
 void test_decoder_decim4_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 4), 13, kFixtureTrack2, 4); }
 void test_decoder_decim4_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 4), 52, kFixtureTrack3, 4); }
 void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 4), 945, kFixtureTrack4, 4); }

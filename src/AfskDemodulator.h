@@ -431,20 +431,24 @@ private:
         float center = (afsk::detail::AFSK_MARK_FREQ + afsk::detail::AFSK_SPACE_FREQ) * 0.5f;
         float dev = 0.5f * (afsk::detail::AFSK_SPACE_FREQ - afsk::detail::AFSK_MARK_FREQ);
 
-        osc.init(sample_rate, center);
+        float osc_rate = (decim > 1) ? demod_sample_rate : sample_rate;
+        osc.init(osc_rate, center);
 
-        const float bpf_scale = 1.00f;
-        int bpf_len = (int)lroundf(sample_rate / baud * 1.425f * bpf_scale);
+        int bpf_len = (int)lroundf(sample_rate / baud * 1.425f);
         bpf_len = afsk::detail::afsk_make_odd(bpf_len);
         bpf_len = afsk::detail::afsk_clamp_int(bpf_len, 9, afsk::detail::AFSK_MAX_BPF_TAPS | 1);
         afsk::dsp::afsk_design_bandpass_kaiser(bpf_taps, bpf_len, afsk::detail::AFSK_MARK_FREQ, afsk::detail::AFSK_SPACE_FREQ, sample_rate, 30.0f);
-        bpf.init(bpf_taps, bpf_len, bpf_taps, bpf_state, afsk::detail::AFSK_MAX_BPF_TAPS + 4);
+        if (decim > 1) {
+            bpf.initDecim(bpf_taps, bpf_len, bpf_taps, bpf_state, afsk::detail::AFSK_MAX_BPF_TAPS + 4, decim);
+        } else {
+            bpf.init(bpf_taps, bpf_len, bpf_taps, bpf_state, afsk::detail::AFSK_MAX_BPF_TAPS + 4);
+        }
 
-        const float lpf_scale = 1.00f;
-        int lpf_len = (int)lroundf(sample_rate / baud * 0.875f * lpf_scale);
+        int lpf_len = (int)lroundf(demod_sample_rate / baud * 0.875f);
+        if (decim > 1 && lpf_len < 13) lpf_len = 13;
         lpf_len = afsk::detail::afsk_make_odd(lpf_len);
         lpf_len = afsk::detail::afsk_clamp_int(lpf_len, 7, afsk::detail::AFSK_MAX_LPF_TAPS | 1);
-        afsk::dsp::afsk_design_lowpass_hamming(lpf_taps, lpf_len, dev, sample_rate);
+        afsk::dsp::afsk_design_lowpass_hamming(lpf_taps, lpf_len, dev, demod_sample_rate);
         i_filt.init(lpf_taps, lpf_len, lpf_taps, i_state, afsk::detail::AFSK_MAX_LPF_TAPS + 4);
         q_filt.init(lpf_taps, lpf_len, lpf_taps, q_state, afsk::detail::AFSK_MAX_LPF_TAPS + 4);
         i_decim.initDecim(lpf_taps, lpf_len, lpf_taps, i_decim_state, afsk::detail::AFSK_MAX_LPF_TAPS + 4, decim);
@@ -561,7 +565,8 @@ private:
         stats.demod_sum += demod;
         stats.samples++;
 #endif
-        if (demod > -0.006f && demod < 0.006f) {
+        float dz = (decim > 1) ? 0.005f : 0.006f;
+        if (demod > -dz && demod < dz) {
             demod = 1.0f;
         }
         prev_i = fi;
@@ -593,29 +598,16 @@ private:
             offset += take;
             if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
 
-            dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-            uint32_t phase = osc.phase;
-            const uint32_t step = osc.phase_step;
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_in[i];
-                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-                decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
-                phase += step;
-            }
-            dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
-            phase = osc.phase;
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_in[i];
-                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-                decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
-                phase += step;
-            }
-            dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
-            osc.phase = phase;
-            osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+            dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
             for (int i = 0; i < out_len; i++) {
-                processIQ(decim_i_out[i], decim_q_out[i]);
+                float s = decim_i_out[i];
+                float mixed_i = s * osc.cos();
+                float mixed_q = -s * osc.sin();
+                float fi = i_filt.filter(mixed_i);
+                float fq = q_filt.filter(mixed_q);
+                osc.next();
+                processIQ(fi, fq);
             }
             decim_fill = 0;
         }
@@ -635,29 +627,16 @@ private:
             offset += take;
             if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
 
-            dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-            uint32_t phase = osc.phase;
-            const uint32_t step = osc.phase_step;
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_in[i];
-                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-                decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
-                phase += step;
-            }
-            dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
-            phase = osc.phase;
-            for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-                float s = decim_in[i];
-                int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-                decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
-                phase += step;
-            }
-            dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
-            osc.phase = phase;
-            osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+            dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
             for (int i = 0; i < out_len; i++) {
-                processIQ(decim_i_out[i], decim_q_out[i]);
+                float s = decim_i_out[i];
+                float mixed_i = s * osc.cos();
+                float mixed_q = -s * osc.sin();
+                float fi = i_filt.filter(mixed_i);
+                float fq = q_filt.filter(mixed_q);
+                osc.next();
+                processIQ(fi, fq);
             }
             decim_fill = 0;
         }
@@ -669,29 +648,16 @@ private:
             decim_in[decim_fill++] = 0.0f;
         }
 
-        dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
         int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
-        uint32_t phase = osc.phase;
-        const uint32_t step = osc.phase_step;
-        for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-            float s = decim_in[i];
-            int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-            decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
-            phase += step;
-        }
-        dsps_fird_f32(&i_decim.fir, decim_mix, decim_i_out, out_len);
-        phase = osc.phase;
-        for (size_t i = 0; i < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX; i++) {
-            float s = decim_in[i];
-            int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-            decim_mix[i] = -s * afsk::dsp::afsk_dds_table[index];
-            phase += step;
-        }
-        dsps_fird_f32(&q_decim.fir, decim_mix, decim_q_out, out_len);
-        osc.phase = phase;
-        osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+        dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
         for (int i = 0; i < out_len; i++) {
-            processIQ(decim_i_out[i], decim_q_out[i]);
+            float s = decim_i_out[i];
+            float mixed_i = s * osc.cos();
+            float mixed_q = -s * osc.sin();
+            float fi = i_filt.filter(mixed_i);
+            float fq = q_filt.filter(mixed_q);
+            osc.next();
+            processIQ(fi, fq);
         }
         decim_fill = 0;
     }
