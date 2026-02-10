@@ -390,10 +390,7 @@ public:
             processSamplesI16Decim(samples, count);
             return;
         }
-        for (size_t i = 0; i < count; i++) {
-            float s = (float)samples[i] / 32768.0f;
-            processSampleRaw(s);
-        }
+        processSamplesI16Block(samples, count);
     }
 
     void processSamples(const float *samples, size_t count) {
@@ -402,9 +399,7 @@ public:
             processSamplesF32Decim(samples, count);
             return;
         }
-        for (size_t i = 0; i < count; i++) {
-            processSampleRaw(samples[i]);
-        }
+        processSamplesF32Block(samples, count);
     }
 
     void processSample(float sample) {
@@ -412,7 +407,11 @@ public:
     }
 
     void flush() {
-        flushDecim();
+        if (decim > 1) {
+            flushDecim();
+        } else {
+            flushBlock();
+        }
     }
 
 #ifdef AFSK_DEMOD_STATS
@@ -584,6 +583,61 @@ private:
         processIQ(fi, fq);
     }
 
+    void processBlockF32(size_t n) {
+        if (n == 0) return;
+        dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)n);
+        uint32_t phase = osc.phase;
+        const uint32_t step = osc.phase_step;
+        for (size_t i = 0; i < n; i++) {
+            int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+            float s = decim_in[i];
+            decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
+            decim_q_out[i] = -s * afsk::dsp::afsk_dds_table[index];
+            phase += step;
+        }
+        osc.phase = phase;
+        osc.index = (int)((osc.phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
+        dsps_fir_f32(&i_filt.fir, decim_mix, decim_i_out, (int)n);
+        dsps_fir_f32(&q_filt.fir, decim_q_out, decim_q_out, (int)n);
+        for (size_t i = 0; i < n; i++) {
+            processIQ(decim_i_out[i], decim_q_out[i]);
+        }
+    }
+
+    void processSamplesI16Block(const int16_t *samples, size_t count) {
+        size_t offset = 0;
+        while (offset < count) {
+            size_t need = afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX - decim_fill;
+            size_t take = count - offset;
+            if (take > need) take = need;
+            for (size_t i = 0; i < take; i++) {
+                decim_in[decim_fill + i] = (float)samples[offset + i] / 32768.0f;
+            }
+            decim_fill += take;
+            offset += take;
+            if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
+            processBlockF32(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
+            decim_fill = 0;
+        }
+    }
+
+    void processSamplesF32Block(const float *samples, size_t count) {
+        size_t offset = 0;
+        while (offset < count) {
+            size_t need = afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX - decim_fill;
+            size_t take = count - offset;
+            if (take > need) take = need;
+            for (size_t i = 0; i < take; i++) {
+                decim_in[decim_fill + i] = samples[offset + i];
+            }
+            decim_fill += take;
+            offset += take;
+            if (decim_fill < afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX) continue;
+            processBlockF32(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX);
+            decim_fill = 0;
+        }
+    }
+
     void processSamplesI16Decim(const int16_t *samples, size_t count) {
         if (!samples || count == 0) return;
         size_t offset = 0;
@@ -659,6 +713,12 @@ private:
             osc.next();
             processIQ(fi, fq);
         }
+        decim_fill = 0;
+    }
+
+    void flushBlock() {
+        if (decim_fill == 0) return;
+        processBlockF32(decim_fill);
         decim_fill = 0;
     }
 
