@@ -33,15 +33,15 @@ using namespace audio_tools;
 #define DEFAULT_RF_MODULE_TYPE       SA818_UHF
 
 // SA818 defaults (adjust to your local channel plan)
-static constexpr float DEFAULT_RF_FREQ_RX = 476.800f;
-static constexpr float DEFAULT_RF_FREQ_TX = 476.800f;
-static constexpr uint8_t DEFAULT_RF_SQUELCH = 4;
+static constexpr float DEFAULT_RF_FREQ_RX = 445.000f;
+static constexpr float DEFAULT_RF_FREQ_TX = 445.000f;
+static constexpr uint8_t DEFAULT_RF_SQUELCH = 0;
 static constexpr uint8_t DEFAULT_RF_BANDWIDTH = DRA818_12K5;
 static constexpr uint8_t DEFAULT_RF_CTCSS_RX = 0;
 static constexpr uint8_t DEFAULT_RF_CTCSS_TX = 0;
-static constexpr bool DEFAULT_RF_PREEMPH = true;
-static constexpr bool DEFAULT_RF_HIGHPASS = true;
-static constexpr bool DEFAULT_RF_LOWPASS = true;
+static constexpr bool DEFAULT_RF_PREEMPH = false;
+static constexpr bool DEFAULT_RF_HIGHPASS = false;
+static constexpr bool DEFAULT_RF_LOWPASS = false;
 static constexpr uint8_t RF_HANDSHAKE_RETRIES = 3;
 static constexpr uint16_t RF_POWERUP_DELAY_MS = 350;
 
@@ -141,9 +141,10 @@ static void switch_to_rx_audio() {
     }
     if (!adc_active) {
         apply_adc_bias_and_attenuation();
+        delay(100);
         auto config = adc.defaultConfig(RX_MODE);
         config.copyFrom(rxInfo);
-        config.is_auto_center_read = false;
+        config.is_auto_center_read = true;
         config.use_apll = true;
         config.auto_clear = false;
         config.adc_pin = DEFAULT_PIN_AUDIO_IN;
