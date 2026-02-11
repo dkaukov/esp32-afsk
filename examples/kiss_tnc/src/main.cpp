@@ -58,6 +58,7 @@ static constexpr size_t TX_BUFFER_SAMPLES = 256;
 static constexpr float TX_GAIN = 0.8f;
 static constexpr float TX_LEAD_SILENCE_MS = 1000.0f;
 static constexpr float TX_TAIL_SILENCE_MS = 1000.0f;
+static constexpr float DC_REMOVER_DECAY_SEC = 0.25f;
 static constexpr adc1_channel_t AUDIO_IN_ADC1_CHANNEL = ADC1_CHANNEL_6;  // GPIO34
 
 // Audio streams
@@ -69,6 +70,7 @@ HardwareSerial radio_serial(2);
 DRA818 radio(&radio_serial, DEFAULT_RF_MODULE_TYPE);
 bool adc_active = false;
 bool dac_active = false;
+float dc_prev = 0.0f;
 
 static int16_t rx_pcm_i16[TX_BUFFER_SAMPLES];
 static float tx_mod_buffer[TX_BUFFER_SAMPLES];
@@ -133,6 +135,15 @@ static void apply_adc_bias_and_attenuation() {
     adc1_config_channel_atten(AUDIO_IN_ADC1_CHANNEL, DEFAULT_ADC_ATTENUATION);
 }
 
+static inline int16_t remove_dc(int16_t x) {
+    const float alpha = 1.0f - expf(-1.0f / (AUDIO_SAMPLE_RATE_HZ * (DC_REMOVER_DECAY_SEC / logf(2.0f))));
+    dc_prev = alpha * (float)x + (1.0f - alpha) * dc_prev;
+    float y = (float)x - dc_prev;
+    if (y > 32767.0f) y = 32767.0f;
+    if (y < -32768.0f) y = -32768.0f;
+    return (int16_t)y;
+}
+
 static void switch_to_rx_audio() {
     if (dac_active) {
         dac.end();
@@ -144,7 +155,7 @@ static void switch_to_rx_audio() {
         delay(100);
         auto config = adc.defaultConfig(RX_MODE);
         config.copyFrom(rxInfo);
-        config.is_auto_center_read = true;
+        config.is_auto_center_read = false;
         config.use_apll = true;
         config.auto_clear = false;
         config.adc_pin = DEFAULT_PIN_AUDIO_IN;
@@ -289,6 +300,9 @@ void loop() {
         size_t bytes =  adc.readBytes((uint8_t *)rx_pcm_i16, sizeof(rx_pcm_i16));
         if (bytes > 0) {
             size_t samples = bytes / sizeof(int16_t);
+            for (size_t i = 0; i < samples; i++) {
+                rx_pcm_i16[i] = remove_dc(rx_pcm_i16[i]);
+            }
             demod.processSamples(rx_pcm_i16, samples);
         }
     }   
