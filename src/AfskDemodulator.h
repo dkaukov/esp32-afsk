@@ -424,7 +424,7 @@ private:
         if (decim_factor < 1) decim_factor = 1;
         decim = decim_factor;
         demod_sample_rate = sample_rate / (float)decim;
-        dc_alpha = 1.0f - expf(-1.0f / (sample_rate * 0.25f));
+        dc_alpha = 1.0f - expf(-1.0f / (demod_sample_rate * 0.25f));
         dc_prev = 0.0f;
         float baud = afsk::detail::AFSK_BAUD_RATE;
         float center = (afsk::detail::AFSK_MARK_FREQ + afsk::detail::AFSK_SPACE_FREQ) * 0.5f;
@@ -574,8 +574,8 @@ private:
     }
 
     void processSampleRaw(float sample) {
-        sample = dcBlock(sample);
         float s = bpf.filter(sample);
+        s = dcBlock(s);
         float mixed_i = s * osc.cos();
         float mixed_q = -s * osc.sin();
         float fi = i_filt.filter(mixed_i);
@@ -586,15 +586,12 @@ private:
 
     void processBlockF32(size_t n) {
         if (n == 0) return;
-        for (size_t i = 0; i < n; i++) {
-            decim_in[i] = dcBlock(decim_in[i]);
-        }
         dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)n);
         uint32_t phase = osc.phase;
         const uint32_t step = osc.phase_step;
         for (size_t i = 0; i < n; i++) {
             int index = (int)((phase >> (32 - afsk::dsp::AFSK_DDS_TABLE_BITS)) & afsk::dsp::AFSK_DDS_TABLE_MASK);
-            float s = decim_in[i];
+            float s = dcBlock(decim_in[i]);
             decim_mix[i] = s * afsk::dsp::afsk_dds_table[(index + afsk::dsp::AFSK_DDS_COS_SHIFT) & afsk::dsp::AFSK_DDS_TABLE_MASK];
             decim_q_out[i] = -s * afsk::dsp::afsk_dds_table[index];
             phase += step;
@@ -615,7 +612,7 @@ private:
             size_t take = count - offset;
             if (take > need) take = need;
             for (size_t i = 0; i < take; i++) {
-                decim_in[decim_fill + i] = dcBlock((float)samples[offset + i] / 32768.0f);
+                decim_in[decim_fill + i] = (float)samples[offset + i] / 32768.0f;
             }
             decim_fill += take;
             offset += take;
@@ -632,7 +629,7 @@ private:
             size_t take = count - offset;
             if (take > need) take = need;
             for (size_t i = 0; i < take; i++) {
-                decim_in[decim_fill + i] = dcBlock(samples[offset + i]);
+                decim_in[decim_fill + i] = samples[offset + i];
             }
             decim_fill += take;
             offset += take;
@@ -659,7 +656,7 @@ private:
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
             dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
             for (int i = 0; i < out_len; i++) {
-                float s = decim_i_out[i];
+                float s = dcBlock(decim_i_out[i]);
                 float mixed_i = s * osc.cos();
                 float mixed_q = -s * osc.sin();
                 float fi = i_filt.filter(mixed_i);
@@ -688,7 +685,7 @@ private:
             int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
             dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
             for (int i = 0; i < out_len; i++) {
-                float s = decim_i_out[i];
+                float s = dcBlock(decim_i_out[i]);
                 float mixed_i = s * osc.cos();
                 float mixed_q = -s * osc.sin();
                 float fi = i_filt.filter(mixed_i);
@@ -709,7 +706,7 @@ private:
         int out_len = (int)(afsk::detail::AFSK_DECIM_IN_SAMPLES_MAX / decim);
         dsps_fird_f32(&bpf.fir, decim_in, decim_i_out, out_len);
         for (int i = 0; i < out_len; i++) {
-            float s = decim_i_out[i];
+            float s = dcBlock(decim_i_out[i]);
             float mixed_i = s * osc.cos();
             float mixed_q = -s * osc.sin();
             float fi = i_filt.filter(mixed_i);
