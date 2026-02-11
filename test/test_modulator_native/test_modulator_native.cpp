@@ -18,7 +18,7 @@ static DecodedFrame g_decoded;
 static int g_frame_count = 0;
 static std::vector<float> g_samples;
 
-static void on_frame(const uint8_t *frame, size_t len, int) {
+static void on_frame(const uint8_t *frame, size_t len) {
     g_decoded.data.assign(frame, frame + len);
     g_frame_count++;
 }
@@ -51,7 +51,7 @@ void test_modulator_native_loopback_basic(void) {
 
     mod.modulate(payload, sizeof(payload), chunk, sizeof(chunk) / sizeof(chunk[0]));
 
-    AfskDemodulator demod(AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, on_frame);
+    AfskDemodulator demod(AFSK_SAMPLE_RATE, AFSK_DECIM_FACTOR, on_frame);
     demod.processSamples(g_samples.data(), g_samples.size());
     demod.flush();
 

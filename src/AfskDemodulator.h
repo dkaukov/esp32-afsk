@@ -368,7 +368,7 @@ static inline void afsk_hdlc_add_bit(AfskHdlcDeframer &d, int bit) {
 // NRZI + HDLC deframer + CRC verify (public callback type)
 // ============================================================================
 
-typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len, int emphasis);
+typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len);
 
 
 // ============================================================================
@@ -379,9 +379,8 @@ class AfskDemodulator {
 public:
     AfskDemodulator(int sample_rate = AFSK_SAMPLE_RATE,
                     int decim = AFSK_DECIM_FACTOR,
-                    int emphasis = 0,
                     AfskPacketCallback callback = nullptr) {
-        init((float)sample_rate, decim, emphasis, callback);
+        init((float)sample_rate, decim, callback);
     }
 
     void processSamples(const int16_t *samples, size_t count) {
@@ -419,13 +418,14 @@ public:
 #endif
 
 private:
-    void init(float sample_rate, int decim_factor, int emphasis_value, AfskPacketCallback callback_fn) {
+    void init(float sample_rate, int decim_factor, AfskPacketCallback callback_fn) {
         memset(this, 0, sizeof(AfskDemodulator));
-        emphasis = emphasis_value;
         callback = callback_fn;
         if (decim_factor < 1) decim_factor = 1;
         decim = decim_factor;
         demod_sample_rate = sample_rate / (float)decim;
+        dc_alpha = 1.0f - expf(-1.0f / (sample_rate * 0.25f));
+        dc_prev = 0.0f;
         float baud = afsk::detail::AFSK_BAUD_RATE;
         float center = (afsk::detail::AFSK_MARK_FREQ + afsk::detail::AFSK_SPACE_FREQ) * 0.5f;
         float dev = 0.5f * (afsk::detail::AFSK_SPACE_FREQ - afsk::detail::AFSK_MARK_FREQ);
@@ -485,7 +485,7 @@ private:
         if (h.in_frame && h.bit_pos == 7 && h.frame_size >= afsk::detail::AFSK_MIN_FRAME_SIZE) {
                 if (afsk::crc::calc(h.frame, (size_t)h.frame_size) == afsk::crc::AX25_CRC_CORRECT) {
                     if (callback && h.frame_size > 2) {
-                        callback(h.frame, (size_t)h.frame_size - 2, emphasis);
+                        callback(h.frame, (size_t)h.frame_size - 2);
                     }
                 }
             }
@@ -574,6 +574,7 @@ private:
     }
 
     void processSampleRaw(float sample) {
+        sample = dcBlock(sample);
         float s = bpf.filter(sample);
         float mixed_i = s * osc.cos();
         float mixed_q = -s * osc.sin();
@@ -585,6 +586,9 @@ private:
 
     void processBlockF32(size_t n) {
         if (n == 0) return;
+        for (size_t i = 0; i < n; i++) {
+            decim_in[i] = dcBlock(decim_in[i]);
+        }
         dsps_fir_f32(&bpf.fir, decim_in, decim_in, (int)n);
         uint32_t phase = osc.phase;
         const uint32_t step = osc.phase_step;
@@ -611,7 +615,7 @@ private:
             size_t take = count - offset;
             if (take > need) take = need;
             for (size_t i = 0; i < take; i++) {
-                decim_in[decim_fill + i] = (float)samples[offset + i] / 32768.0f;
+                decim_in[decim_fill + i] = dcBlock((float)samples[offset + i] / 32768.0f);
             }
             decim_fill += take;
             offset += take;
@@ -628,7 +632,7 @@ private:
             size_t take = count - offset;
             if (take > need) take = need;
             for (size_t i = 0; i < take; i++) {
-                decim_in[decim_fill + i] = samples[offset + i];
+                decim_in[decim_fill + i] = dcBlock(samples[offset + i]);
             }
             decim_fill += take;
             offset += take;
@@ -722,10 +726,15 @@ private:
         decim_fill = 0;
     }
 
-    int emphasis;
+    inline float dcBlock(float x) {
+        dc_prev += dc_alpha * (x - dc_prev);
+        return x - dc_prev;
+    }
     AfskPacketCallback callback;
     int decim;
     float demod_sample_rate;
+    float dc_alpha;
+    float dc_prev;
 
     afsk::dsp::DdsOsc osc;
     afsk::dsp::Esp32Fir bpf;

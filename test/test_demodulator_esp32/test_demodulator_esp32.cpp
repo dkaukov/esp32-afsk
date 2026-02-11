@@ -7,20 +7,20 @@
 #include "AfskModulator.h"
 #include "embedded_audio.h"
 
-static void on_packet_decoded(const uint8_t *, size_t, int);
+static void on_packet_decoded(const uint8_t *, size_t);
 static volatile uint32_t g_packets = 0;
-static void on_loopback_packet(const uint8_t *frame, size_t len, int);
+static void on_loopback_packet(const uint8_t *frame, size_t len);
 static void on_loopback_samples(const float *samples, size_t count);
 static volatile uint32_t g_loopback_packets = 0;
 static uint8_t g_loopback_frame[512];
 static size_t g_loopback_frame_len = 0;
 static AfskDemodulator *g_loopback_demod = nullptr;
 
-static void on_packet_decoded(const uint8_t *, size_t, int) {
+static void on_packet_decoded(const uint8_t *, size_t) {
     g_packets++;
 }
 
-static void on_loopback_packet(const uint8_t *frame, size_t len, int) {
+static void on_loopback_packet(const uint8_t *frame, size_t len) {
     if (g_loopback_packets == 0 && len <= sizeof(g_loopback_frame)) {
         memcpy(g_loopback_frame, frame, len);
         g_loopback_frame_len = len;
@@ -46,7 +46,7 @@ static void test_modem_loopback_esp32(void) {
     g_loopback_frame_len = 0;
     memset(g_loopback_frame, 0, sizeof(g_loopback_frame));
 
-    AfskDemodulator demod(AFSK_SAMPLE_RATE, 2, 0, on_loopback_packet);
+    AfskDemodulator demod(AFSK_SAMPLE_RATE, 2, on_loopback_packet);
     g_loopback_demod = &demod;
     AfskModulator mod(AFSK_SAMPLE_RATE, on_loopback_samples);
     float chunk[256];
@@ -60,7 +60,7 @@ static void test_modem_loopback_esp32(void) {
 }
 
 static void run_embedded_decoder(int decim) {
-    AfskDemodulator demod(AFSK_SAMPLE_RATE, decim, 0, on_packet_decoded);
+    AfskDemodulator demod(AFSK_SAMPLE_RATE, decim, on_packet_decoded);
     TEST_MESSAGE("Starting embedded decoder benchmark...");
     g_packets = 0;
 

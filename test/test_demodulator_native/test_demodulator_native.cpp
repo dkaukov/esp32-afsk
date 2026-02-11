@@ -41,7 +41,7 @@ static uint32_t g_packet_count = 0;
 static AfskDemodStats g_last_stats;
 #endif
 
-static void on_packet_decoded(const uint8_t *, size_t, int) {
+static void on_packet_decoded(const uint8_t *, size_t) {
     g_packet_count++;
 }
 
@@ -55,7 +55,7 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
     const uint32_t target_rate = 48000;
     TEST_ASSERT_MESSAGE(sample_rate > 0, "Invalid FLAC sample rate.");
 
-    AfskDemodulator demod((float)target_rate, decim, 0, on_packet_decoded);
+    AfskDemodulator demod((float)target_rate, decim, on_packet_decoded);
     g_packet_count = 0;
 
     LinearResampler rs;
@@ -171,9 +171,9 @@ void test_decoder_decim1_track4(void) { assertDecoded(decode_flac_and_count_pack
 void test_decoder_decim2_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 2), 1005, kFixtureTrack1, 2); }
 void test_decoder_decim2_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 2), 13, kFixtureTrack2, 2); }
 void test_decoder_decim2_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 2), 52, kFixtureTrack3, 2); }
-void test_decoder_decim2_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 2), 945, kFixtureTrack4, 2); }
+void test_decoder_decim2_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 2), 946, kFixtureTrack4, 2); }
 
-void test_decoder_decim3_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 3), 1004, kFixtureTrack1, 3); }
+void test_decoder_decim3_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 3), 1005, kFixtureTrack1, 3); }
 void test_decoder_decim3_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 3), 13, kFixtureTrack2, 3); }
 void test_decoder_decim3_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 3), 52, kFixtureTrack3, 3); }
 void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 3), 945, kFixtureTrack4, 3); }
@@ -181,7 +181,7 @@ void test_decoder_decim3_track4(void) { assertDecoded(decode_flac_and_count_pack
 void test_decoder_decim4_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 4), 1000, kFixtureTrack1, 4); }
 void test_decoder_decim4_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 4), 13, kFixtureTrack2, 4); }
 void test_decoder_decim4_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 4), 52, kFixtureTrack3, 4); }
-void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 4), 945, kFixtureTrack4, 4); }
+void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack4, 4), 947, kFixtureTrack4, 4); }
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();

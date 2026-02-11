@@ -16,8 +16,6 @@ KISS TNC terminal example for ESP32 using arduino-audio-tools and esp32-afsk.
 #include "AfskDemodulator.h"
 #include "AfskModulator.h"
 
-using namespace audio_tools;
-
 // Connections to radio module
 #define DEFAULT_PIN_RF_RXD    16
 #define DEFAULT_PIN_RF_TXD    17
@@ -84,9 +82,9 @@ static bool kiss_have_cmd = false;
 static uint8_t kiss_payload_buf[KISS_MAX_FRAME];
 static size_t kiss_payload_len = 0;
 
-static void on_rx_packet(const uint8_t *frame, size_t len, int);
+static void on_rx_packet(const uint8_t *frame, size_t len);
 static void on_tx_samples(const float *samples, size_t count);
-AfskDemodulator demod(AUDIO_SAMPLE_RATE_HZ, 2, 0, on_rx_packet);
+AfskDemodulator demod(AUDIO_SAMPLE_RATE_HZ, 2, on_rx_packet);
 AfskModulator mod(AUDIO_SAMPLE_RATE_HZ, on_tx_samples);
 
 static void kiss_write_escaped(uint8_t b) {
@@ -110,7 +108,7 @@ static void kiss_send_frame(const uint8_t *data, size_t len) {
     Serial.write(KISS_FEND);
 }
 
-static void on_rx_packet(const uint8_t *frame, size_t len, int) {
+static void on_rx_packet(const uint8_t *frame, size_t len) {
     kiss_send_frame(frame, len);
 }
 

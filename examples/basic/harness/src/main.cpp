@@ -147,7 +147,7 @@ static void cmdDecode(const char *arg) {
     }
 
     // Reset decoder state
-    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
@@ -339,7 +339,7 @@ static void cmdLoopback() {
     }
 
     // Feed encoded audio into decoder
-    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, onPacketDecoded);
     sessionPacketCount = 0;
     pktQueueHead = 0;
     pktQueueTail = 0;
@@ -472,7 +472,7 @@ void setup() {
     initEncoderSineTable();
 
     // Initialize demodulator
-    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, 0, onPacketDecoded);
+    demod = AfskDemodulator((float)AUDIO_SAMPLE_RATE, AFSK_DECIM_FACTOR, onPacketDecoded);
 }
 
 void loop() {
