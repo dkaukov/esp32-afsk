@@ -114,7 +114,7 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
 void setUp() {}
 void tearDown() {}
 
-static const char *basename(const char *path) {
+static const char *fixture_basename(const char *path) {
     const char *last = path;
     for (const char *p = path; *p; ++p) {
         if (*p == '/' || *p == '\\') last = p + 1;
@@ -138,7 +138,7 @@ static void assertDecoded(uint32_t count, uint32_t min_packets, const char *path
 #ifdef AFSK_DEMOD_STATS
     const float mean = g_last_stats.samples ? (g_last_stats.demod_sum / (float)g_last_stats.samples) : 0.0f;
     printf("%-40s %5d %8u %10u %10.3f %10.3f %12.6f %10llu\n",
-           basename(path),
+           fixture_basename(path),
            decim,
            (unsigned)count,
            (unsigned)min_packets,
@@ -148,7 +148,7 @@ static void assertDecoded(uint32_t count, uint32_t min_packets, const char *path
            (unsigned long long)g_last_stats.samples);
 #else
     printf("%-40s %5d %8u %10u\n",
-           basename(path),
+           fixture_basename(path),
            decim,
            (unsigned)count,
            (unsigned)min_packets);
