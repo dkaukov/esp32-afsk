@@ -49,6 +49,11 @@ float chunk[256];
 mod.modulate(payload, payload_len, chunk, 256);
 ```
 
+  - `chunk` is a caller-provided scratch/output buffer.
+  - The modulator fills this buffer with PCM float samples in blocks.
+  - When a block is ready (or a final partial block remains), it invokes `onTxSamples(samples, count)`.
+  - The callback must consume/copy samples immediately if it needs them later.
+
 - Modulate with lead/tail silence (PTT friendly):
 ```cpp
 mod.modulate(payload, payload_len, chunk, 256, 1000.0f, 1000.0f);
