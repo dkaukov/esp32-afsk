@@ -7,4 +7,4 @@ Expected files:
 - `01_40-Mins-Traffic-on-144.39_60s.flac`
 - `02_100-Mic-E-Bursts-DE-emphasized.flac`
 
-These are referenced by `test/test_decoder_native/test_decoder_native.cpp`.
+These are referenced by `test/test_demodulator_native/test_demodulator_native.cpp`.
