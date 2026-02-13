@@ -1,6 +1,6 @@
 {
   "name": "esp32-afsk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ESP32 AFSK modem helper library",
   "keywords": "esp32, afsk, audio, modem",
   "repository": {
