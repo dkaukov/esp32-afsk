@@ -2,6 +2,14 @@
 
 ESP32 AFSK modem helper library for Arduino.
 
+## Performance Notes
+
+- The demodulator uses `esp-dsp` FIR/DSP routines for best performance.
+- Good real-time performance is expected on ESP32-class targets, especially:
+  - `ESP32`
+  - `ESP32-S3`
+- Other targets/build environments may work functionally but can show different throughput.
+
 ## Install
 
 Use PlatformIO Library Manager or add as a Git dependency.
