@@ -12,7 +12,10 @@ ESP32 AFSK modem helper library for Arduino.
 
 ## Install
 
-Use PlatformIO Library Manager or add as a Git dependency.
+- [Arduino Library Manager](https://docs.arduino.cc/libraries/esp32-afsk/)
+- [PlatformIO Registry](https://registry.platformio.org/libraries/dkaukov/esp32-afsk)
+
+Alternatively, add the repository as a Git dependency.
 
 ## Usage
 
