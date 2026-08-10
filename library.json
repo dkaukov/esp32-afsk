@@ -1,6 +1,6 @@
 {
   "name": "esp32-afsk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ESP32 AFSK modem helper library",
   "keywords": "esp32, afsk, audio, modem",
   "repository": {
@@ -16,5 +16,17 @@
   "license": "GPL-3.0-only",
   "frameworks": "arduino",
   "platforms": "espressif32",
-  "headers": ["AfskDemodulator.h", "AfskModulator.h"]
+  "headers": ["AfskDemodulator.h", "AfskModulator.h"],
+  "examples": [
+    {
+      "name": "Basic",
+      "base": "examples/basic",
+      "files": ["platformio.ini", "src/main.ino"]
+    },
+    {
+      "name": "KISS TNC",
+      "base": "examples/kiss_tnc",
+      "files": ["platformio.ini", "src/main.cpp"]
+    }
+  ]
 }
