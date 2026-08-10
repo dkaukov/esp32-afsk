@@ -21,7 +21,7 @@
     {
       "name": "Basic",
       "base": "examples/basic",
-      "files": ["platformio.ini", "src/main.ino"]
+      "files": ["platformio.ini", "basic.ino"]
     },
     {
       "name": "KISS TNC",
