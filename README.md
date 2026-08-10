@@ -2,6 +2,8 @@
 
 ESP32 AFSK modem helper library for Arduino.
 
+[![PlatformIO Registry](https://badges.registry.platformio.org/packages/dkaukov/library/esp32-afsk.svg)](https://registry.platformio.org/libraries/dkaukov/esp32-afsk)
+
 ## Performance Notes
 
 - The demodulator uses `esp-dsp` FIR/DSP routines for best performance.
