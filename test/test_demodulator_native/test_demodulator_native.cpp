@@ -41,6 +41,11 @@ static uint32_t g_packet_count = 0;
 static AfskDemodStats g_last_stats;
 #endif
 
+void test_carrier_detected_starts_clear(void) {
+    AfskDemodulator demod(48000, 2, nullptr);
+    TEST_ASSERT_FALSE(demod.carrierDetected());
+}
+
 static void on_packet_decoded(const uint8_t *, size_t) {
     g_packet_count++;
 }
@@ -185,6 +190,7 @@ void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_pack
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
+    RUN_TEST(test_carrier_detected_starts_clear);
     RUN_TEST(test_decoder_decim1_track1);
     RUN_TEST(test_decoder_decim1_track2);
     RUN_TEST(test_decoder_decim1_track3);

@@ -428,6 +428,11 @@ public:
         }
     }
 
+    // Symbol-timing PLL lock is a generic AFSK carrier indication. It is
+    // suitable for TNC DCD/CSMA decisions and does not require a complete,
+    // CRC-valid AX.25 frame.
+    bool carrierDetected() const { return slicer.locked; }
+
 #ifdef AFSK_DEMOD_STATS
     const AfskDemodStats &getStats() const { return stats; }
 #endif
