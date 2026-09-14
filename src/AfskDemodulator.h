@@ -512,7 +512,7 @@ private:
         h.flag_window = (uint8_t)((h.flag_window << 1) | (bit & 1));
         if (h.flag_window == FLAG) {
             if ((uint32_t)(bit_count - last_flag_bit) <= DCD_MAX_FLAG_GAP_BITS) {
-                flag_burst_count++;
+                if (flag_burst_count < DCD_MIN_FLAGS) flag_burst_count++;
             } else {
                 flag_burst_count = 1;
             }
