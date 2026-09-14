@@ -75,6 +75,15 @@ static void capture_carrier(bool detected) {
     }
 }
 
+static void process_white_noise(AfskDemodulator &demod, uint32_t seed, size_t count) {
+    uint32_t random = seed;
+    for (size_t i = 0; i < count; i++) {
+        random = random * 1664525u + 1013904223u;
+        int16_t sample = (int16_t)(random >> 16);
+        demod.processSamples(&sample, 1);
+    }
+}
+
 void test_carrier_detected_after_flag_burst(void) {
     generated_samples.clear();
     AfskModulator mod(48000, capture_samples, 5, 0);
@@ -95,6 +104,25 @@ void test_carrier_detected_after_flag_burst(void) {
     TEST_ASSERT_FALSE(demod.carrierDetected());
     TEST_ASSERT_EQUAL_UINT(2, carrier_event_count);
     TEST_ASSERT_FALSE(carrier_events[1]);
+}
+
+void test_carrier_detected_noise_packet_noise(void) {
+    AfskDemodulator demod(48000, 1, nullptr);
+    process_white_noise(demod, 1, 4800);
+    TEST_ASSERT_FALSE(demod.carrierDetected());
+
+    generated_samples.clear();
+    AfskModulator mod(48000, capture_samples, 5, 0);
+    uint8_t payload[128];
+    memset(payload, 0x55, sizeof(payload));
+    float buffer[256];
+    mod.modulate(payload, sizeof(payload), buffer, sizeof(buffer) / sizeof(buffer[0]));
+    demod.processSamples(generated_samples.data(), generated_samples.size());
+    demod.flush();
+    TEST_ASSERT_TRUE(demod.carrierDetected());
+
+    process_white_noise(demod, 2, 4800);
+    TEST_ASSERT_FALSE(demod.carrierDetected());
 }
 
 static void on_packet_decoded(const uint8_t *, size_t) {
@@ -244,6 +272,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_carrier_detected_starts_clear);
     RUN_TEST(test_carrier_detected_ignores_white_noise);
     RUN_TEST(test_carrier_detected_after_flag_burst);
+    RUN_TEST(test_carrier_detected_noise_packet_noise);
     RUN_TEST(test_decoder_decim1_track1);
     RUN_TEST(test_decoder_decim1_track2);
     RUN_TEST(test_decoder_decim1_track3);
