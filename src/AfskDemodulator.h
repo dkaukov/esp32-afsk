@@ -384,6 +384,7 @@ static inline void afsk_hdlc_add_bit(AfskHdlcDeframer &d, int bit) {
 // ============================================================================
 
 typedef void (*AfskPacketCallback)(const uint8_t *frame, size_t len);
+typedef void (*AfskCarrierCallback)(bool detected);
 
 
 // ============================================================================
@@ -428,10 +429,13 @@ public:
         }
     }
 
-    // Symbol-timing PLL lock is a generic AFSK carrier indication. It is
-    // suitable for TNC DCD/CSMA decisions and does not require a complete,
-    // CRC-valid AX.25 frame.
-    bool carrierDetected() const { return slicer.locked; }
+    // Four closely spaced HDLC flags indicate an AFSK transmission. DCD stays
+    // asserted for a short bit-time hang after the last qualified flag.
+    bool carrierDetected() const { return carrier_detected; }
+
+    // Optional edge notification for event-driven TNCs. Poll carrierDetected()
+    // instead when the application already has a regular service loop.
+    void setCarrierCallback(AfskCarrierCallback callback_fn) { carrier_callback = callback_fn; }
 
 #ifdef AFSK_DEMOD_STATS
     const AfskDemodStats &getStats() const { return stats; }
@@ -480,6 +484,9 @@ private:
 
         slicer.init(demod_sample_rate, baud);
         nrzi_last = 0;
+        bit_count = 0;
+        last_flag_bit = 0;
+        flag_burst_count = 0;
         afsk::detail::afsk_hdlc_reset(hdlc);
 
 #ifdef AFSK_DEMOD_STATS
@@ -499,9 +506,18 @@ private:
     void hdlcProcessBit(int bit) {
         const uint8_t FLAG = 0x7E;
         afsk::detail::AfskHdlcDeframer &h = hdlc;
+        bit_count++;
+        updateCarrierState();
 
         h.flag_window = (uint8_t)((h.flag_window << 1) | (bit & 1));
         if (h.flag_window == FLAG) {
+            if ((uint32_t)(bit_count - last_flag_bit) <= DCD_MAX_FLAG_GAP_BITS) {
+                flag_burst_count++;
+            } else {
+                flag_burst_count = 1;
+            }
+            last_flag_bit = bit_count;
+            updateCarrierState();
         if (h.in_frame && h.bit_pos == 7 && h.frame_size >= afsk::detail::AFSK_MIN_FRAME_SIZE) {
                 if (afsk::crc::calc(h.frame, (size_t)h.frame_size) == afsk::crc::AX25_CRC_CORRECT) {
                     if (callback && h.frame_size > 2) {
@@ -528,6 +544,14 @@ private:
         }
 
         afsk::detail::afsk_hdlc_add_bit(h, bit);
+    }
+
+    void updateCarrierState() {
+        bool next = flag_burst_count >= DCD_MIN_FLAGS
+            && (uint32_t)(bit_count - last_flag_bit) <= DCD_HANG_BITS;
+        if (next == carrier_detected) return;
+        carrier_detected = next;
+        if (carrier_callback) carrier_callback(next);
     }
 
     void slicerProcess(float sample) {
@@ -747,7 +771,18 @@ private:
         dc_prev += dc_alpha * (x - dc_prev);
         return x - dc_prev;
     }
+    static constexpr uint8_t DCD_MIN_FLAGS = 4;
+    // 16 bits accepts consecutive flags with modest demodulator timing jitter.
+    static constexpr uint16_t DCD_MAX_FLAG_GAP_BITS = 16;
+    // 300 ms at 1200 baud. This is deliberately independent of sample rate.
+    static constexpr uint16_t DCD_HANG_BITS = 360;
+
     AfskPacketCallback callback;
+    AfskCarrierCallback carrier_callback;
+    uint32_t bit_count;
+    uint32_t last_flag_bit;
+    uint8_t flag_burst_count;
+    bool carrier_detected;
     int decim;
     float demod_sample_rate;
     float dc_alpha;

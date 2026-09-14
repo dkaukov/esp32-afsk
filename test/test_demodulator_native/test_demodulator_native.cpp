@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 
 #include "unity.h"
 
@@ -12,6 +13,7 @@
 #endif
 
 #include "AfskDemodulator.h"
+#include "AfskModulator.h"
 
 namespace {
 
@@ -44,6 +46,55 @@ static AfskDemodStats g_last_stats;
 void test_carrier_detected_starts_clear(void) {
     AfskDemodulator demod(48000, 2, nullptr);
     TEST_ASSERT_FALSE(demod.carrierDetected());
+}
+
+void test_carrier_detected_ignores_white_noise(void) {
+    for (uint32_t seed = 1; seed <= 10; seed++) {
+        AfskDemodulator demod(48000, 2, nullptr);
+        uint32_t random = seed;
+        bool detected = false;
+        for (size_t i = 0; i < 48000; i++) {
+            random = random * 1664525u + 1013904223u;
+            int16_t sample = (int16_t)(random >> 16);
+            demod.processSamples(&sample, 1);
+            detected = detected || demod.carrierDetected();
+        }
+        TEST_ASSERT_FALSE(detected);
+    }
+}
+
+static std::vector<float> generated_samples;
+static bool carrier_events[2];
+static size_t carrier_event_count;
+static void capture_samples(const float *samples, size_t count) {
+    generated_samples.insert(generated_samples.end(), samples, samples + count);
+}
+static void capture_carrier(bool detected) {
+    if (carrier_event_count < sizeof(carrier_events) / sizeof(carrier_events[0])) {
+        carrier_events[carrier_event_count++] = detected;
+    }
+}
+
+void test_carrier_detected_after_flag_burst(void) {
+    generated_samples.clear();
+    AfskModulator mod(48000, capture_samples, 5, 0);
+    const uint8_t payload[] = {0x01};
+    float buffer[256];
+    mod.modulate(payload, sizeof(payload), buffer, sizeof(buffer) / sizeof(buffer[0]));
+    AfskDemodulator demod(48000, 1, nullptr);
+    carrier_event_count = 0;
+    demod.setCarrierCallback(capture_carrier);
+    demod.processSamples(generated_samples.data(), generated_samples.size());
+    demod.flush();
+    TEST_ASSERT_TRUE(demod.carrierDetected());
+    TEST_ASSERT_EQUAL_UINT(1, carrier_event_count);
+    TEST_ASSERT_TRUE(carrier_events[0]);
+    std::vector<float> silence(16000, 0.0f);
+    demod.processSamples(silence.data(), silence.size());
+    demod.flush();
+    TEST_ASSERT_FALSE(demod.carrierDetected());
+    TEST_ASSERT_EQUAL_UINT(2, carrier_event_count);
+    TEST_ASSERT_FALSE(carrier_events[1]);
 }
 
 static void on_packet_decoded(const uint8_t *, size_t) {
@@ -191,6 +242,8 @@ void test_decoder_decim4_track4(void) { assertDecoded(decode_flac_and_count_pack
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_carrier_detected_starts_clear);
+    RUN_TEST(test_carrier_detected_ignores_white_noise);
+    RUN_TEST(test_carrier_detected_after_flag_burst);
     RUN_TEST(test_decoder_decim1_track1);
     RUN_TEST(test_decoder_decim1_track2);
     RUN_TEST(test_decoder_decim1_track3);

@@ -84,6 +84,7 @@ static size_t kiss_payload_len = 0;
 
 static void on_rx_packet(const uint8_t *frame, size_t len);
 static void on_tx_samples(const float *samples, size_t count);
+static void on_carrier_changed(bool detected);
 AfskDemodulator demod(AUDIO_SAMPLE_RATE_HZ, 2, on_rx_packet);
 AfskModulator mod(AUDIO_SAMPLE_RATE_HZ, on_tx_samples);
 
@@ -110,6 +111,13 @@ static void kiss_send_frame(const uint8_t *data, size_t len) {
 
 static void on_rx_packet(const uint8_t *frame, size_t len) {
     kiss_send_frame(frame, len);
+}
+
+// DCD is based on a qualified HDLC flag burst, not the radio's squelch pin.
+// A scheduler can either track this edge notification or poll
+// demod.carrierDetected() before starting a KISS transmission.
+static void on_carrier_changed(bool detected) {
+    Serial.printf("AFSK carrier %s\n", detected ? "detected" : "clear");
 }
 
 static void on_tx_samples(const float *samples, size_t count) {
@@ -289,6 +297,7 @@ void setup() {
     pinMode(DEFAULT_PIN_LED, OUTPUT);
     digitalWrite(DEFAULT_PIN_LED, LOW);
     init_radio_module();
+    demod.setCarrierCallback(on_carrier_changed);
     switch_to_rx_audio();
 }
 
