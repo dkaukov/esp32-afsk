@@ -291,6 +291,7 @@ public:
         locked = false;
         good_trans = 0;
         bad_trans = 0;
+        symbols_since_transition = 0;
     }
 
     float nominal_step;
@@ -311,6 +312,7 @@ public:
     bool locked;
     int good_trans;
     int bad_trans;
+    int symbols_since_transition;
 };
 
 static inline float afsk_clamp(float v, float lo, float hi) {
@@ -429,8 +431,9 @@ public:
         }
     }
 
-    // Four closely spaced HDLC flags indicate an AFSK transmission. DCD stays
-    // asserted for a short bit-time hang after the last qualified flag.
+    // Four closely spaced HDLC flags qualify the start of a transmission.
+    // Once asserted, DCD follows the symbol-timing PLL lock and clears when
+    // synchronization is lost; a new flag burst is then required to reassert.
     bool carrierDetected() const { return carrier_detected; }
 
     // Optional edge notification for event-driven TNCs. Poll carrierDetected()
@@ -507,7 +510,6 @@ private:
         const uint8_t FLAG = 0x7E;
         afsk::detail::AfskHdlcDeframer &h = hdlc;
         bit_count++;
-        updateCarrierState();
 
         h.flag_window = (uint8_t)((h.flag_window << 1) | (bit & 1));
         if (h.flag_window == FLAG) {
@@ -517,7 +519,6 @@ private:
                 flag_burst_count = 1;
             }
             last_flag_bit = bit_count;
-            updateCarrierState();
         if (h.in_frame && h.bit_pos == 7 && h.frame_size >= afsk::detail::AFSK_MIN_FRAME_SIZE) {
                 if (afsk::crc::calc(h.frame, (size_t)h.frame_size) == afsk::crc::AX25_CRC_CORRECT) {
                     if (callback && h.frame_size > 2) {
@@ -547,25 +548,33 @@ private:
     }
 
     void updateCarrierState() {
-        bool next = flag_burst_count >= DCD_MIN_FLAGS
-            && (uint32_t)(bit_count - last_flag_bit) <= DCD_HANG_BITS;
+        if ((uint32_t)(bit_count - last_flag_bit) > DCD_MAX_FLAG_GAP_BITS) {
+            flag_burst_count = 0;
+        }
+        bool next = carrier_detected
+            ? slicer.locked
+            : slicer.locked && flag_burst_count >= DCD_MIN_FLAGS;
         if (next == carrier_detected) return;
         carrier_detected = next;
+        if (!carrier_detected) flag_burst_count = 0;
         if (carrier_callback) carrier_callback(next);
     }
 
     void slicerProcess(float sample) {
         afsk::detail::AfskSlicerPll &pll = slicer;
         const int symbol = (sample > 0.0f) ? 1 : 0;
+        const bool transitioned = symbol != pll.prev_symbol;
 
         pll.phase += pll.step;
         while (pll.phase >= 1.0f) {
             pll.phase -= 1.0f;
             int decoded = nrziDecode(symbol);
             hdlcProcessBit(decoded);
+            if (!transitioned) pll.symbols_since_transition++;
         }
 
-        if (symbol != pll.prev_symbol) {
+        if (transitioned) {
+            pll.symbols_since_transition = 0;
             float error = pll.phase - 0.5f;
             error = afsk::detail::afsk_clamp(error, -0.5f, 0.5f);
 
@@ -591,7 +600,18 @@ private:
             pll.phase -= pll.phase_gain_acq * error;
         }
 
+        // NRZI AFSK can have up to six consecutive no-transition bits before
+        // bit stuffing. Eight symbol periods without a transition therefore
+        // means symbol timing is no longer synchronized.
+        if (pll.locked && pll.symbols_since_transition >= SYNC_LOSS_BITS) {
+            pll.locked = false;
+            pll.integ = 0.0f;
+            pll.good_trans = 0;
+            pll.bad_trans = 0;
+        }
+
         pll.prev_symbol = symbol;
+        updateCarrierState();
     }
 
     void processIQ(float fi, float fq) {
@@ -774,8 +794,7 @@ private:
     static constexpr uint8_t DCD_MIN_FLAGS = 4;
     // 16 bits accepts consecutive flags with modest demodulator timing jitter.
     static constexpr uint16_t DCD_MAX_FLAG_GAP_BITS = 16;
-    // 300 ms at 1200 baud. This is deliberately independent of sample rate.
-    static constexpr uint16_t DCD_HANG_BITS = 360;
+    static constexpr uint8_t SYNC_LOSS_BITS = 8;
 
     AfskPacketCallback callback;
     AfskCarrierCallback carrier_callback;
