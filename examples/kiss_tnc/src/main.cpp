@@ -24,6 +24,7 @@ KISS TNC terminal example for ESP32 using arduino-audio-tools and esp32-afsk.
 #define DEFAULT_PIN_PTT       18
 #define DEFAULT_PIN_PD        19
 #define DEFAULT_PIN_LED        2
+#define DEFAULT_PIN_RGB_LED   13  // WS2812/NeoPixel data pin; set -1 if unused.
 #define DEFAULT_VOLUME         8
 
 #define DEFAULT_ADC_BIAS_VOLTAGE     1.75
@@ -135,11 +136,12 @@ static void on_rx_packet(const uint8_t *frame, size_t len) {
     kiss_send_frame(frame, len);
 }
 
-// DCD is based on a qualified HDLC flag burst, not the radio's squelch pin.
-// A scheduler can either track this edge notification or poll
-// demod.carrierDetected() before starting a KISS transmission.
+// Keep the KISS serial stream binary-clean. Show qualified AFSK DCD on an
+// optional RGB LED instead: amber means the channel is busy, off is clear.
 static void on_carrier_changed(bool detected) {
-    Serial.printf("AFSK carrier %s\n", detected ? "detected" : "clear");
+    if (DEFAULT_PIN_RGB_LED >= 0) {
+        neopixelWrite(DEFAULT_PIN_RGB_LED, detected ? 32 : 0, detected ? 16 : 0, 0);
+    }
 }
 
 static void on_tx_samples(const float *samples, size_t count) {
@@ -375,6 +377,9 @@ void setup() {
     delay(RF_POWERUP_DELAY_MS);
     pinMode(DEFAULT_PIN_LED, OUTPUT);
     digitalWrite(DEFAULT_PIN_LED, LOW);
+    if (DEFAULT_PIN_RGB_LED >= 0) {
+        neopixelWrite(DEFAULT_PIN_RGB_LED, 0, 0, 0);
+    }
     init_radio_module();
     demod.setCarrierCallback(on_carrier_changed);
     switch_to_rx_audio();
