@@ -24,6 +24,7 @@ KISS TNC terminal example for ESP32 using arduino-audio-tools and esp32-afsk.
 #define DEFAULT_PIN_PTT       18
 #define DEFAULT_PIN_PD        19
 #define DEFAULT_PIN_LED        2
+#define DEFAULT_PIN_RGB_LED   13  // WS2812/NeoPixel data pin; set -1 if unused.
 #define DEFAULT_VOLUME         8
 
 #define DEFAULT_ADC_BIAS_VOLTAGE     1.75
@@ -49,13 +50,19 @@ static constexpr uint8_t KISS_FESC  = 0xDB;
 static constexpr uint8_t KISS_TFEND = 0xDC;
 static constexpr uint8_t KISS_TFESC = 0xDD;
 static constexpr uint8_t KISS_CMD_DATA = 0x00;
+static constexpr uint8_t KISS_CMD_TXDELAY = 0x01;
+static constexpr uint8_t KISS_CMD_PERSIST = 0x02;
+static constexpr uint8_t KISS_CMD_SLOTTIME = 0x03;
 
 static constexpr int AUDIO_SAMPLE_RATE_HZ = AFSK_SAMPLE_RATE;
 static constexpr size_t KISS_MAX_FRAME = 512;
+static constexpr uint8_t TX_QUEUE_SIZE = 2;
+static constexpr uint8_t DEFAULT_KISS_TXDELAY = 45;
+static constexpr uint8_t DEFAULT_KISS_PERSIST = 63;
+static constexpr uint8_t DEFAULT_KISS_SLOTTIME = 10;
 static constexpr size_t TX_BUFFER_SAMPLES = 256;
 static constexpr float TX_GAIN = 0.8f;
-static constexpr float TX_LEAD_SILENCE_MS = 1000.0f;
-static constexpr float TX_TAIL_SILENCE_MS = 1000.0f;
+static constexpr float TX_TAIL_SILENCE_MS = 70.0f;
 static constexpr float DC_REMOVER_DECAY_SEC = 0.25f;
 static constexpr adc1_channel_t AUDIO_IN_ADC1_CHANNEL = ADC1_CHANNEL_6;  // GPIO34
 
@@ -82,8 +89,25 @@ static bool kiss_have_cmd = false;
 static uint8_t kiss_payload_buf[KISS_MAX_FRAME];
 static size_t kiss_payload_len = 0;
 
+// A KISS TNC has a deliberately small, fixed FIFO: accepting a frame and
+// transmitting it are separate events.
+struct TxJob {
+    uint16_t len;
+    uint8_t frame[KISS_MAX_FRAME];
+};
+static TxJob tx_queue[TX_QUEUE_SIZE];
+static uint8_t tx_head = 0;
+static uint8_t tx_tail = 0;
+static uint8_t tx_count = 0;
+static uint8_t kiss_txdelay = DEFAULT_KISS_TXDELAY;
+static uint8_t kiss_persist = DEFAULT_KISS_PERSIST;
+static uint8_t kiss_slottime = DEFAULT_KISS_SLOTTIME;
+static bool csma_slot_pending = false;
+static uint32_t csma_slot_at = 0;
+
 static void on_rx_packet(const uint8_t *frame, size_t len);
 static void on_tx_samples(const float *samples, size_t count);
+static void on_carrier_changed(bool detected);
 AfskDemodulator demod(AUDIO_SAMPLE_RATE_HZ, 2, on_rx_packet);
 AfskModulator mod(AUDIO_SAMPLE_RATE_HZ, on_tx_samples);
 
@@ -110,6 +134,14 @@ static void kiss_send_frame(const uint8_t *data, size_t len) {
 
 static void on_rx_packet(const uint8_t *frame, size_t len) {
     kiss_send_frame(frame, len);
+}
+
+// Keep the KISS serial stream binary-clean. Show qualified AFSK DCD on an
+// optional RGB LED instead: amber means the channel is busy, off is clear.
+static void on_carrier_changed(bool detected) {
+    if (DEFAULT_PIN_RGB_LED >= 0) {
+        neopixelWrite(DEFAULT_PIN_RGB_LED, detected ? 32 : 0, detected ? 16 : 0, 0);
+    }
 }
 
 static void on_tx_samples(const float *samples, size_t count) {
@@ -196,14 +228,71 @@ static void end_tx() {
     switch_to_rx_audio();
 }
 
+static bool enqueue_tx_frame(const uint8_t *frame, size_t len) {
+    if (!frame || len == 0 || len > KISS_MAX_FRAME || tx_count == TX_QUEUE_SIZE) {
+        Serial.println("KISS TX queue full; dropping frame");
+        return false;
+    }
+    TxJob &job = tx_queue[tx_tail];
+    job.len = (uint16_t)len;
+    memcpy(job.frame, frame, len);
+    tx_tail = (tx_tail + 1) % TX_QUEUE_SIZE;
+    tx_count++;
+    return true;
+}
+
+static void complete_tx_frame() {
+    tx_head = (tx_head + 1) % TX_QUEUE_SIZE;
+    tx_count--;
+    csma_slot_pending = false;
+}
+
+static uint16_t kiss_units_to_ms(uint8_t value) {
+    return (uint16_t)value * 10;
+}
+
+// This is serviced on every pass through loop(), so the receiver and KISS
+// parser remain active while the channel is busy or a slot is pending.
+static void service_tx_queue() {
+    if (tx_count == 0 || !adc_active) return;
+    if (demod.carrierDetected()) {
+        csma_slot_pending = false;
+        return;
+    }
+    const uint32_t now = millis();
+    if (!csma_slot_pending) {
+        csma_slot_at = now + kiss_units_to_ms(kiss_slottime);
+        csma_slot_pending = true;
+        return;
+    }
+    if ((int32_t)(now - csma_slot_at) < 0) return;
+    if ((uint8_t)esp_random() > kiss_persist) {
+        csma_slot_at = now + kiss_units_to_ms(kiss_slottime);
+        return;
+    }
+
+    const TxJob &job = tx_queue[tx_head];
+    begin_tx();
+    // esp32-afsk supplies a fixed flag preamble. The KISS TXDELAY value is
+    // the additional carrier lead time in this example.
+    mod.modulate(job.frame, job.len, tx_mod_buffer, TX_BUFFER_SAMPLES,
+                 (float)kiss_units_to_ms(kiss_txdelay), TX_TAIL_SILENCE_MS);
+    end_tx();
+    complete_tx_frame();
+}
+
 static void handle_kiss_rx() {
     while (Serial.available() > 0) {
         uint8_t b = (uint8_t)Serial.read();
         if (b == KISS_FEND) {
-            if (kiss_in_frame && kiss_payload_len > 0 && kiss_port_cmd == KISS_CMD_DATA) {
-                begin_tx();
-                mod.modulate(kiss_payload_buf, kiss_payload_len, tx_mod_buffer, TX_BUFFER_SAMPLES, TX_LEAD_SILENCE_MS, TX_TAIL_SILENCE_MS);
-                end_tx();
+            const uint8_t kiss_port = kiss_port_cmd >> 4;
+            const uint8_t kiss_command = kiss_port_cmd & 0x0F;
+            if (kiss_in_frame && kiss_port == 0 && kiss_command == KISS_CMD_DATA && kiss_payload_len > 0) {
+                enqueue_tx_frame(kiss_payload_buf, kiss_payload_len);
+            } else if (kiss_in_frame && kiss_port == 0 && kiss_payload_len == 1) {
+                if (kiss_command == KISS_CMD_TXDELAY) kiss_txdelay = kiss_payload_buf[0];
+                else if (kiss_command == KISS_CMD_PERSIST) kiss_persist = kiss_payload_buf[0];
+                else if (kiss_command == KISS_CMD_SLOTTIME) kiss_slottime = kiss_payload_buf[0];
             }
             kiss_in_frame = true;
             kiss_escape = false;
@@ -288,7 +377,11 @@ void setup() {
     delay(RF_POWERUP_DELAY_MS);
     pinMode(DEFAULT_PIN_LED, OUTPUT);
     digitalWrite(DEFAULT_PIN_LED, LOW);
+    if (DEFAULT_PIN_RGB_LED >= 0) {
+        neopixelWrite(DEFAULT_PIN_RGB_LED, 0, 0, 0);
+    }
     init_radio_module();
+    demod.setCarrierCallback(on_carrier_changed);
     switch_to_rx_audio();
 }
 
@@ -303,5 +396,6 @@ void loop() {
             }
             demod.processSamples(rx_pcm_i16, samples);
         }
-    }   
+    }
+    service_tx_queue();
 }
