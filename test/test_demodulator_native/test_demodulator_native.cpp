@@ -129,7 +129,7 @@ static void on_packet_decoded(const uint8_t *, size_t) {
     g_packet_count++;
 }
 
-static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
+static uint32_t decode_flac_and_count_packets(const char *path, int decim, bool *saw_carrier = nullptr) {
     drflac *flac = drflac_open_file(path, NULL);
     TEST_ASSERT_NOT_NULL_MESSAGE(flac, "Failed to open FLAC fixture.");
 
@@ -174,6 +174,7 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
                 const double t = rs.pos - (double)(rs.in_index - 1);
                 const float out = rs.prev + (sample - rs.prev) * (float)t;
                 demod.processSamples(&out, 1);
+                if (saw_carrier && demod.carrierDetected()) *saw_carrier = true;
                 rs.pos += rs.step;
             }
 
@@ -187,6 +188,7 @@ static uint32_t decode_flac_and_count_packets(const char *path, int decim) {
 #endif
 
     demod.flush();
+    if (saw_carrier && demod.carrierDetected()) *saw_carrier = true;
     free(buffer);
     drflac_close(flac);
 
@@ -247,6 +249,12 @@ static const char kFixtureTrack2[] = "test/fixtures/01_40-Mins-Traffic-on-144.39
 static const char kFixtureTrack3[] = "test/fixtures/01_40-Mins-Traffic-on-144.39_60s.flac";
 static const char kFixtureTrack4[] = "test/fixtures/02_100-Mic-E-Bursts-DE-emphasized.flac";
 
+void test_carrier_detected_on_recorded_afsk_traffic(void) {
+    bool saw_carrier = false;
+    decode_flac_and_count_packets(kFixtureTrack2, 2, &saw_carrier);
+    TEST_ASSERT_TRUE(saw_carrier);
+}
+
 void test_decoder_decim1_track1(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack1, 1), 1005, kFixtureTrack1, 1); }
 void test_decoder_decim1_track2(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack2, 1), 13, kFixtureTrack2, 1); }
 void test_decoder_decim1_track3(void) { assertDecoded(decode_flac_and_count_packets(kFixtureTrack3, 1), 51, kFixtureTrack3, 1); }
@@ -273,6 +281,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_carrier_detected_ignores_white_noise);
     RUN_TEST(test_carrier_detected_after_flag_burst);
     RUN_TEST(test_carrier_detected_noise_packet_noise);
+    RUN_TEST(test_carrier_detected_on_recorded_afsk_traffic);
     RUN_TEST(test_decoder_decim1_track1);
     RUN_TEST(test_decoder_decim1_track2);
     RUN_TEST(test_decoder_decim1_track3);

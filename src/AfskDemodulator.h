@@ -551,9 +551,11 @@ private:
         if ((uint32_t)(bit_count - last_flag_bit) > DCD_MAX_FLAG_GAP_BITS) {
             flag_burst_count = 0;
         }
+        const bool synchronized = slicer.locked
+            && slicer.symbols_since_transition < SYNC_LOSS_BITS;
         bool next = carrier_detected
-            ? slicer.locked
-            : slicer.locked && flag_burst_count >= DCD_MIN_FLAGS;
+            ? synchronized
+            : synchronized && flag_burst_count >= DCD_MIN_FLAGS;
         if (next == carrier_detected) return;
         carrier_detected = next;
         if (!carrier_detected) flag_burst_count = 0;
@@ -598,16 +600,6 @@ private:
             float delta = pll.kp * error + pll.ki * pll.integ;
             pll.step = afsk::detail::afsk_clamp(pll.step - delta, pll.step_min, pll.step_max);
             pll.phase -= pll.phase_gain_acq * error;
-        }
-
-        // NRZI AFSK can have up to six consecutive no-transition bits before
-        // bit stuffing. Eight symbol periods without a transition therefore
-        // means symbol timing is no longer synchronized.
-        if (pll.locked && pll.symbols_since_transition >= SYNC_LOSS_BITS) {
-            pll.locked = false;
-            pll.integ = 0.0f;
-            pll.good_trans = 0;
-            pll.bad_trans = 0;
         }
 
         pll.prev_symbol = symbol;
